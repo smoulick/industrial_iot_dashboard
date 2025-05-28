@@ -1,0 +1,54 @@
+# D:\Project\industrial_iot_dashboard\config\conveyor_belt_config.yml
+
+asset_type: "conveyor_belt"
+
+sensors:
+  ultrasonic:
+    - sensor_id: "UB800-CB1-MAIN"
+      enabled: true
+      output_file: "ultrasonic_UB800-CB1-MAIN_data.csv"
+      a1: 70
+      a2: 800
+      time_interval_seconds: 0.05
+      response_delay_ms: 100
+      modes: [1, 2, 3, 4, 5]
+      run_duration_seconds: null
+
+  inductive:
+    - sensor_id: "NBN40-CB1-PRESENCE"
+      enabled: true
+      output_file: "inductive_NBN40-CB1-PRESENCE_data.csv"
+      switching_function: "NO"
+      time_interval_seconds: 0.02
+      run_duration_seconds: null
+
+    - sensor_id: "NBN40-CB1-LIMIT"
+      enabled: true
+      output_file: "inductive_NBN40-CB1-LIMIT_data.csv"
+      switching_function: "NC"
+      rated_operating_distance_mm: 38
+      time_interval_seconds: 0.03
+      run_duration_seconds: null
+
+  # --- Add new Heat Sensor configuration below ---
+  heat_sensor: # This is the new key for this sensor type
+    - sensor_id: "PATOL5450-CB1-HOTSPOT" # Unique ID for this heat sensor
+      enabled: true                      # Set to false to disable
+      output_file: "heat_PATOL5450-CB1-HOTSPOT_data.csv" # Output file name
+
+      # Parameters for the heat sensor simulation (refer to heat_sensor.py for defaults)
+      # time_interval_seconds: 1.0 # Default is 1.0s in the script
+      # ambient_temp_celsius: 25.0 # Default is 25.0°C
+      hot_spot_detection_threshold_celsius: 90.0 # Example: alarm if material hits 90°C
+      probability_of_hot_spot: 0.02  # Example: 2% chance per interval of a hot spot
+      # hot_spot_max_temp_celsius: 200.0 # Default is 200.0°C
+      # probability_of_fault: 0.001    # Default is 0.001 (0.1%)
+      run_duration_seconds: null       # 'null' or omit for indefinite run
+
+    # You could add another heat sensor instance if needed, e.g., with different sensitivity (threshold)
+    # - sensor_id: "PATOL5450-CB1-OVERHEAT"
+    #   enabled: true
+    #   output_file: "heat_PATOL5450-CB1-OVERHEAT_data.csv"
+    #   hot_spot_detection_threshold_celsius: 120.0 # Higher threshold for a different zone/purpose
+    #   probability_of_hot_spot: 0.005
+    #   run_duration_seconds: null
