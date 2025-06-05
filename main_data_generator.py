@@ -1,123 +1,213 @@
-# In D:\Project\industrial_iot_dashboard\main_data_generator.py
-import yaml
+from datetime import datetime
+import logging
 from pathlib import Path
 import threading
-import time
-import importlib  # For dynamically importing sensor modules
-import logging
+import argparse
+import sys
+import signal
 
-# Configure basic logging for the main generator
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [MainGenerator] - %(message)s')
+# Import from your structure
+try:
+    from data_generators.conveyor_belt.inductive_sensor import generate_realistic_inductive_data
+    from data_generators.conveyor_belt.ultrasonic_sensor import generate_realistic_ultrasonic_data
+    from data_generators.conveyor_belt.heat_sensor import generate_realistic_heat_data
+except ImportError as error:
+    print(f"Error importing sensor modules: {error}")
+    print("Make sure sensor files are in data_generators/conveyor_belt/ directory")
+    sys.exit(1)
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('sensor_simulation.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
-# Define base paths
-ROOT_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = ROOT_DIR / "config"
-DATA_OUTPUT_DIR = ROOT_DIR / "data_output"
+
+class MainDataGenerator:
+    """Main data generator with infinite runtime capability."""
+
+    def __init__(self, base_output_path="data_output/conveyor_belt"):
+        self.base_path = Path(base_output_path)
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        self.running = False
+        self.threads = []
+
+        # Sensor configs with BOTH PRESENCE and LIMIT inductive sensors
+        self.sensor_configs = {
+            "inductive_presence": {
+                "function": generate_realistic_inductive_data,
+                "default_file": "inductive_NBN40-CB1-PRESENCE_data.csv",
+                "description": "NBN40-U1-E2-V1 Inductive Proximity Sensor (Presence Detection)",
+                "sensor_id": "NBN40-CB1-PRESENCE"
+            },
+            "inductive_limit": {
+                "function": generate_realistic_inductive_data,
+                "default_file": "inductive_NBN40-CB1-LIMIT_data.csv",
+                "description": "NBN40-U1-E2-V1 Inductive Proximity Sensor (Limit Switch)",
+                "sensor_id": "NBN40-CB1-LIMIT"
+            },
+            "ultrasonic": {
+                "function": generate_realistic_ultrasonic_data,
+                "default_file": "ultrasonic_UB800-CB1-MAIN_data.csv",
+                "description": "UB800-18GM40-E5-V1 Ultrasonic Distance Sensor",
+                "sensor_id": "UB800-CB1-MAIN"
+            },
+            "heat": {
+                "function": generate_realistic_heat_data,
+                "default_file": "heat_PATOL5450-CB1-HOTSPOT_data.csv",
+                "description": "PATOL5450 Heat Detection Sensor",
+                "sensor_id": "PATOL5450-CB1-HOTSPOT"
+            }
+        }
+
+    def signal_handler(self, signum, frame):
+        """Handle Ctrl+C gracefully."""
+        logger.info("🛑 Received interrupt signal. Stopping all sensors...")
+        self.stop_all_sensors()
+        sys.exit(0)
+
+    def run_all_sensors(self, duration_seconds=None):
+        """Run all sensors. If duration_seconds is None, runs infinitely."""
+
+        # Set up signal handler for graceful shutdown
+        signal.signal(signal.SIGINT, self.signal_handler)
+
+        logger.info("=" * 80)
+        logger.info("STARTING CONVEYOR BELT SENSOR SIMULATION")
+        logger.info(f"Output Directory: {self.base_path}")
+        if duration_seconds:
+            logger.info(f"Duration: {duration_seconds} seconds")
+        else:
+            logger.info("Duration: INFINITE (until Ctrl+C)")
+        logger.info("=" * 80)
+
+        self.running = True
+        self.threads = []
+
+        for sensor_type, config in self.sensor_configs.items():
+            output_path = self.base_path / config["default_file"]
+
+            # Prepare parameters
+            params = {
+                "output_file_path": output_path,
+                "run_duration_seconds": duration_seconds,  # None for infinite
+                "sensor_id": config["sensor_id"]
+            }
+
+            thread = threading.Thread(
+                target=config["function"],
+                kwargs=params,
+                name=f"{sensor_type}_thread",
+                daemon=True  # Daemon threads will exit when main program exits
+            )
+
+            self.threads.append(thread)
+            thread.start()
+            logger.info(f"🚀 Started {sensor_type} sensor ({config['sensor_id']})")
+
+        try:
+            if duration_seconds:
+                # Wait for specified duration
+                for thread in self.threads:
+                    thread.join()
+            else:
+                # Run infinitely - keep main thread alive
+                logger.info("✅ All sensors started. Running infinitely...")
+                logger.info("Press Ctrl+C to stop all sensors")
+                while self.running:
+                    # Check if any thread died unexpectedly
+                    alive_threads = [t for t in self.threads if t.is_alive()]
+                    if len(alive_threads) != len(self.threads):
+                        logger.warning(
+                            f"Some sensor threads stopped unexpectedly. Alive: {len(alive_threads)}/{len(self.threads)}")
+
+                    # Sleep and check again
+                    import time
+                    time.sleep(10)
+
+            logger.info("=" * 80)
+            logger.info("✅ ALL CONVEYOR BELT SENSORS COMPLETED!")
+            logger.info("📁 Generated files:")
+            for sensor_type, config in self.sensor_configs.items():
+                file_path = self.base_path / config["default_file"]
+                if file_path.exists():
+                    size_mb = file_path.stat().st_size / (1024 * 1024)
+                    logger.info(f"   - {file_path} ({size_mb:.2f} MB)")
+            logger.info("=" * 80)
+
+        except KeyboardInterrupt:
+            logger.info("🛑 Simulation interrupted by user")
+            self.stop_all_sensors()
+        except Exception as e:
+            logger.error(f"❌ Unexpected error: {e}")
+            self.stop_all_sensors()
+
+        self.running = False
+
+    def stop_all_sensors(self):
+        """Stop all running sensor simulations."""
+        logger.info("🛑 Stopping all sensor simulations...")
+        self.running = False
+
+        # Threads will stop naturally due to the interrupt handling in each sensor
+        logger.info("🛑 All sensors will stop gracefully")
 
 
-def load_config(config_file_name: str):
-    config_path = CONFIG_DIR / config_file_name
-    try:
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        logger.error(f"Configuration file {config_path} not found.")
-        return None
-    except yaml.YAMLError as e:
-        logger.error(f"Error parsing YAML in {config_path}: {e}")
-        return None
+def main():
+    """Main function with infinite runtime support."""
+    parser = argparse.ArgumentParser(
+        description="Conveyor Belt Sensor Data Generator",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run infinitely until Ctrl+C
+  python main_data_generator.py
 
+  # Run infinitely (explicit)
+  python main_data_generator.py --infinite
 
-def run_sensor_process(sensor_module_name, sensor_function_name, base_output_dir, sensor_config):
-    """
-    Imports and runs a sensor generation function.
-    sensor_config is the specific dictionary for one sensor instance from the YAML.
-    """
-    try:
-        module_path_for_import = sensor_module_name.replace("/", ".").replace("\\", ".")
-        module = importlib.import_module(module_path_for_import)
-        sensor_function = getattr(module, sensor_function_name)
+  # Run for specific duration
+  python main_data_generator.py --duration 3600  # 1 hour
+        """
+    )
 
-        params_for_function = sensor_config.copy()
-        output_file_name = params_for_function.pop("output_file",
-                                                   f"{sensor_config.get('sensor_id', 'default_sensor')}_data.csv")
-        params_for_function["output_file_path"] = base_output_dir / output_file_name
-        params_for_function.pop("enabled", None)
+    parser.add_argument(
+        "--duration",
+        type=int,
+        default=None,
+        help="Duration in seconds (default: infinite)"
+    )
+    parser.add_argument(
+        "--infinite",
+        action="store_true",
+        help="Run infinitely until stopped (default behavior)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="data_output/conveyor_belt",
+        help="Output directory for data files"
+    )
 
-        sensor_id = params_for_function.get('sensor_id', 'N/A_SENSOR_ID')
-        logger.info(
-            f"Attempting to start sensor: {sensor_id} using function {sensor_function_name} from module {module_path_for_import}")
-        logger.info(f"Sensor parameters for {sensor_id}: {params_for_function}")
+    args = parser.parse_args()
 
-        sensor_function(**params_for_function)
-        logger.info(f"Sensor {sensor_id} finished or exited.")
+    # Determine duration
+    if args.infinite:
+        duration = None
+    else:
+        duration = args.duration  # None by default, so infinite
 
-    except ModuleNotFoundError:
-        logger.error(f"Sensor module {module_path_for_import} not found.")
-    except AttributeError:
-        logger.error(f"Function {sensor_function_name} not found in {module_path_for_import}.")
-    except Exception as e:
-        sensor_id_for_error = sensor_config.get('sensor_id', 'UNKNOWN_SENSOR')
-        logger.error(f"Error running sensor {sensor_id_for_error}: {e}", exc_info=True)
+    logger.info("🏭 Industrial IoT Sensor Data Generator")
+    logger.info("=" * 50)
+
+    generator = MainDataGenerator(base_output_path=args.output_dir)
+    generator.run_all_sensors(duration_seconds=duration)
 
 
 if __name__ == "__main__":
-    logger.info("Starting main data generator orchestration...")
-    active_threads = []
-
-    conveyor_config_data = load_config("conveyor_belt_config.yml")
-    if conveyor_config_data:
-        asset_type = conveyor_config_data.get("asset_type", "unknown_asset")
-        asset_specific_output_dir = DATA_OUTPUT_DIR / asset_type
-        asset_specific_output_dir.mkdir(parents=True, exist_ok=True)
-
-        for sensor_type, sensor_instances_list in conveyor_config_data.get("sensors", {}).items():
-            module_name = ""
-            function_to_call = ""
-
-            if sensor_type == "ultrasonic":
-                module_name = f"data_generators.{asset_type}.ultrasonic_sensor"
-                function_to_call = "generate_ultrasonic_data"
-            elif sensor_type == "inductive":
-                module_name = f"data_generators.{asset_type}.inductive_sensor"
-                function_to_call = "generate_inductive_data"
-            # --- Add new elif block for heat sensors ---
-            elif sensor_type == "heat_sensor":  # Matches the key in your YAML
-                module_name = f"data_generators.{asset_type}.heat_sensor"  # Points to the new script
-                function_to_call = "generate_heat_data"  # The function in heat_sensor.py
-            # --- End of new block ---
-            else:
-                logger.warning(f"Unknown sensor type '{sensor_type}' in config. Skipping.")
-                continue
-
-            if module_name and function_to_call:
-                for single_sensor_config in sensor_instances_list:
-                    if single_sensor_config.get("enabled", False):
-                        thread = threading.Thread(
-                            target=run_sensor_process,
-                            args=(module_name, function_to_call, asset_specific_output_dir, single_sensor_config),
-                            daemon=True
-                        )
-                        active_threads.append(thread)
-                        thread.start()
-                    else:
-                        logger.info(
-                            f"Sensor '{single_sensor_config.get('sensor_id', 'N/A')}' of type '{sensor_type}' is disabled in config.")
-
-    if not active_threads:
-        logger.warning("No active sensor simulations were started. Check configurations.")
-    else:
-        logger.info(f"Launched {len(active_threads)} sensor simulation thread(s).")
-        logger.info("Main generator will keep running. Press Ctrl+C to stop.")
-        try:
-            while any(t.is_alive() for t in active_threads):
-                time.sleep(1)
-            logger.info("All sensor threads have completed their run duration or exited.")
-        except KeyboardInterrupt:
-            logger.info("Keyboard interrupt received in main generator. Shutting down...")
-        finally:
-            for i, t in enumerate(active_threads):
-                if t.is_alive():
-                    logger.info(f"Thread {i + 1} for a sensor might still be processing shutdown...")
-            logger.info("Main data generator process finished.")
+    main()
