@@ -2,3 +2,4 @@ pandas
 numpy
 streamlit
 PyYAML 
+streamlit-autorefresh

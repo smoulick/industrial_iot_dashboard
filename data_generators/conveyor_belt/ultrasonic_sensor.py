@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import csv
 import logging
@@ -8,7 +8,6 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 
 def generate_realistic_ultrasonic_data(
         output_file_path,
@@ -21,12 +20,9 @@ def generate_realistic_ultrasonic_data(
         shift_hours: tuple = (6, 22)
 ):
     """
-    Generates realistic switch-output ultrasonic sensor data.
-    UB800-18GM60-E5-V1-M is a digital switch sensor - only HIGH/LOW output.
-    No analog distance measurement available.
+    Generates realistic ultrasonic sensor data with both analog distance and digital switch output.
     """
-
-    logger.info(f"Sensor [{sensor_id}]: Starting switch-output ultrasonic simulation")
+    logger.info(f"Sensor [{sensor_id}]: Starting analog+switch-output ultrasonic simulation")
     if run_duration_seconds:
         logger.info(f"Sensor [{sensor_id}]: Will run for {run_duration_seconds} seconds")
     else:
@@ -36,11 +32,9 @@ def generate_realistic_ultrasonic_data(
     production_cycle_seconds = production_cycle_minutes * 60
     cycle_start_time = time.time()
 
-    # State tracking for switch sensor
     switching_events = 0
     last_output_state = 0
 
-    # Production patterns for object presence/absence
     production_patterns = [
         {"name": "high_throughput", "object_frequency": 0.7, "cycle_speed": 1.0},
         {"name": "medium_throughput", "object_frequency": 0.5, "cycle_speed": 0.8},
@@ -57,14 +51,13 @@ def generate_realistic_ultrasonic_data(
 
         if not file_exists:
             csv_writer.writerow([
-                "timestamp", "sensor_id", "output_state",
+                "timestamp", "sensor_id", "distance_mm", "output_state",
                 "switching_events", "uptime_seconds", "production_phase"
             ])
 
         i = 0
         try:
             while True:
-                # Check duration only if specified
                 if run_duration_seconds and (datetime.now() - sim_start_time).total_seconds() > run_duration_seconds:
                     break
 
@@ -77,6 +70,7 @@ def generate_realistic_ultrasonic_data(
 
                 if not is_production_active:
                     # No production - no objects detected
+                    distance_mm = np.random.uniform(700, 800)  # Far distance (no object)
                     current_output_state = 0
                     production_phase = "idle"
                 else:
@@ -86,39 +80,44 @@ def generate_realistic_ultrasonic_data(
 
                     if cycle_progress < 0.1:
                         # Cycle start - loading, no objects yet
+                        distance_mm = np.random.uniform(650, 800)
                         current_output_state = 0
                         production_phase = "loading"
                     elif cycle_progress < 0.8:
                         # Production active - objects moving through detection zone
-
-                        # Change production pattern occasionally
                         if i % 500 == 0:
                             current_pattern = (current_pattern + 1) % len(production_patterns)
-
                         pattern = production_patterns[current_pattern]
 
-                        # Simulate object presence based on pattern
-                        object_cycle_time = 3.0 / pattern["cycle_speed"]  # Base 3-second object cycles
+                        object_cycle_time = 3.0 / pattern["cycle_speed"]
                         object_position = (uptime % object_cycle_time) / object_cycle_time
 
-                        # Object detected when in the middle portion of cycle
                         object_detection_window = pattern["object_frequency"]
                         detection_start = (1.0 - object_detection_window) / 2
                         detection_end = detection_start + object_detection_window
 
                         if detection_start < object_position < detection_end:
-                            current_output_state = 1  # Object detected in A1-A2 zone
+                            # Object present: random distance in detection window
+                            distance_mm = np.random.uniform(a1_threshold_mm + 10, a2_threshold_mm - 10)
+                            current_output_state = 1
                         else:
-                            current_output_state = 0  # No object or outside detection zone
+                            # No object: random far distance
+                            distance_mm = np.random.uniform(a2_threshold_mm + 10, 800)
+                            current_output_state = 0
 
                         production_phase = f"production_{pattern['name']}"
                     else:
                         # Cycle end - unloading, sporadic objects
-                        unload_cycle = (uptime % 2.0) / 2.0  # 2-second unload cycles
-                        current_output_state = 1 if unload_cycle < 0.3 else 0  # 30% object presence
+                        unload_cycle = (uptime % 2.0) / 2.0
+                        if unload_cycle < 0.3:
+                            distance_mm = np.random.uniform(a1_threshold_mm + 10, a2_threshold_mm - 10)
+                            current_output_state = 1
+                        else:
+                            distance_mm = np.random.uniform(a2_threshold_mm + 10, 800)
+                            current_output_state = 0
                         production_phase = "unloading"
 
-                # Count switching events (important for switch sensors)
+                # Count switching events
                 if current_output_state != last_output_state:
                     switching_events += 1
                     logger.debug(
@@ -129,6 +128,7 @@ def generate_realistic_ultrasonic_data(
                 csv_writer.writerow([
                     timestamp.isoformat(),
                     sensor_id,
+                    round(distance_mm, 1),
                     current_output_state,
                     switching_events,
                     round(uptime, 2),
@@ -148,8 +148,6 @@ def generate_realistic_ultrasonic_data(
 
     logger.info(f"Sensor [{sensor_id}]: Completed. Generated {i} data points, {switching_events} switching events.")
 
-
 if __name__ == "__main__":
-    # Run ultrasonic switch sensor infinitely
     output_path = "../../data_output/conveyor_belt/ultrasonic_UB800-CB1-MAIN_data.csv"
     generate_realistic_ultrasonic_data(output_path, run_duration_seconds=None)

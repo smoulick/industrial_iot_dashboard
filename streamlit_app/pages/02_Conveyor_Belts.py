@@ -1,164 +1,241 @@
-# D:\Project\industrial_iot_dashboard\streamlit_app\pages\02_Conveyor_Belts.py
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 from pathlib import Path
-import time
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="Conveyor Belt Monitoring",
-    page_icon="🚚",
-    layout="wide"
-)
+# --- MUST BE THE FIRST STREAMLIT COMMAND ---
+st.set_page_config(page_title="Conveyor Belt Monitoring", layout="wide")
 
-# --- Page Title ---
-st.title("🚚 Conveyor Belt Monitoring")
+CONVEYOR_DATA_DIR = Path("data_output/conveyor_belt")
+REFRESH_INTERVAL_MS = 2000  # 2 seconds
 
-# --- Path to the CSV file ---
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-CONVEYOR_DATA_DIR = PROJECT_ROOT / "data_output" / "conveyor_belt"
+# Auto-refresh every 2 seconds, does NOT reset scroll!
+st_autorefresh(interval=REFRESH_INTERVAL_MS, key="datarefresh")
+st.title("Conveyor Belt Monitoring Dashboard")
 
+# --- Sidebar with dropdown ---
+with st.sidebar:
+    st.title("Conveyor Components")
+    component = st.selectbox(
+        "Select Component",
+        ["Default", "Idler/Roller (Smart-Idler)", "Pulley"]
+    )
 
-# --- Function to load data (reused) ---
-def load_sensor_data(file_path: Path, sensor_type: str):
-    # print(f"[STREAMLIT DEBUG] load_sensor_data for {sensor_type} from: {file_path}")
-    if file_path.exists():
-        if file_path.stat().st_size > 0:
-            try:
-                df = pd.read_csv(file_path)
-                if not df.empty:
-                    if 'timestamp' in df.columns:
-                        df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    else:
-                        st.error(f"'{sensor_type}' CSV missing 'timestamp' column: {file_path.name}")
-                        return pd.DataFrame()
-                return df
-            except pd.errors.EmptyDataError:
-                return pd.DataFrame() # File is empty
-            except Exception as e:
-                st.error(f"Error loading '{sensor_type}' data from '{file_path.name}': {e}")
-                return pd.DataFrame()
+def load_sensor_data(file_path, sensor_name):
+    try:
+        df = pd.read_csv(file_path)
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            df = df.sort_values('timestamp', ascending=False)
+        return df
+    except FileNotFoundError:
+        st.error(f"Data file not found for {sensor_name}!")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading {sensor_name} data: {str(e)}")
+        return pd.DataFrame()
+
+if component == "Default":
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.subheader("🔄 Inductive Sensor")
+        df_inductive = load_sensor_data(
+            CONVEYOR_DATA_DIR / "inductive_NBN40-CB1-PRESENCE_data.csv",
+            "Inductive Sensor"
+        )
+        if not df_inductive.empty:
+            latest = df_inductive.iloc[0]
+            st.metric("Detection State", "OBJECT" if latest['output_state'] else "CLEAR")
+            st.metric("Distance", f"{latest['distance_to_target_mm']:.1f} mm")
+            st.metric("Switching Function", latest['switching_function'])
+            st.line_chart(df_inductive.set_index('timestamp')['distance_to_target_mm'].tail(100))
+            with st.expander("📥 Show Recent Inductive Readings", expanded=False):
+                show_cols = [c for c in ['timestamp', 'distance_to_target_mm', 'output_state', 'switching_function'] if c in df_inductive.columns]
+                if show_cols:
+                    st.dataframe(
+                        df_inductive.head(10)[show_cols].set_index('timestamp'),
+                        use_container_width=True,
+                        height=300
+                    )
+                else:
+                    st.info("No matching columns for Inductive Sensor table.")
         else:
-            return pd.DataFrame() # File exists but is 0 bytes
-    else:
-        return pd.DataFrame() # File does not exist
+            st.info("No data for Inductive Sensor.")
 
-# === Ultrasonic Sensor Section ===
-st.header("Ultrasonic Sensor Data")
-ULTRASONIC_CSV_FILENAME = "ultrasonic_UB800-CB1-MAIN_data.csv" # Match your config
-ULTRASONIC_DATA_FILE_PATH = CONVEYOR_DATA_DIR / ULTRASONIC_CSV_FILENAME
-ultrasonic_placeholder = st.empty()
-
-# === Inductive Sensor Section ===
-st.divider()
-st.header("Inductive Sensor Data")
-INDUCTIVE_SENSOR_FILES = {
-    "NBN40-CB1-PRESENCE": "inductive_NBN40-CB1-PRESENCE_data.csv",
-    "NBN40-CB1-LIMIT": "inductive_NBN40-CB1-LIMIT_data.csv"
-}
-inductive_placeholders = {key: st.empty() for key in INDUCTIVE_SENSOR_FILES}
-
-
-# === Heat Sensor Section ===
-st.divider()
-st.header("Infrared Heat Sensor Data (Patol 5450)")
-HEAT_SENSOR_FILES = {
-    "PATOL5450-CB1-HOTSPOT": "heat_PATOL5450-CB1-HOTSPOT_data.csv"
-}
-heat_sensor_placeholders = {key: st.empty() for key in HEAT_SENSOR_FILES}
-
-
-# --- Main Display Loop ---
-while True:
-    # --- Update Ultrasonic Sensor Display ---
-    df_ultrasonic = load_sensor_data(ULTRASONIC_DATA_FILE_PATH, "Ultrasonic")
-    with ultrasonic_placeholder.container():
-        st.subheader(f"Ultrasonic: {ULTRASONIC_CSV_FILENAME}")
+    with col2:
+        st.subheader("📏 Ultrasonic Sensor")
+        df_ultrasonic = load_sensor_data(
+            CONVEYOR_DATA_DIR / "ultrasonic_UB800-CB1-MAIN_data.csv",
+            "Ultrasonic Sensor"
+        )
         if not df_ultrasonic.empty:
-            required_us_cols = ['timestamp', 'sensor_id', 'distance_mm', 'output', 'mode']
-            if not all(col in df_ultrasonic.columns for col in required_us_cols):
-                st.error(f"Ultrasonic CSV missing required columns.")
-            else:
-                latest_us_point = df_ultrasonic.iloc[-1]
-                us_cols = st.columns(5)
-                us_cols[0].metric("Time", latest_us_point['timestamp'].strftime('%H:%M:%S'))
-                us_cols[1].metric("Sensor ID", str(latest_us_point['sensor_id']))
-                us_cols[2].metric("Distance (mm)", f"{latest_us_point['distance_mm']:.2f}")
-                us_cols[3].metric("Output", "ON" if latest_us_point['output'] == 1 else "OFF")
-                us_cols[4].metric("Mode", str(latest_us_point['mode']))
-
-                st.caption("Recent Ultrasonic Readings (Time Series Data)")
-                st.dataframe(df_ultrasonic.tail(5).set_index('timestamp'), use_container_width=True)
-
-                st.caption("Ultrasonic Distance Over Time") # Caption for the chart
-                st.line_chart(df_ultrasonic.set_index('timestamp')[['distance_mm']].tail(200), use_container_width=True) # Chart restored, showing last 200 points
+            latest = df_ultrasonic.iloc[0]
+            st.metric("Measured Distance", f"{latest['distance_mm']:.1f} mm")
+            st.metric("Detection State", "OBJECT PRESENT" if latest['output_state'] else "NO OBJECT")
+            st.metric("Switching Events", f"{latest['switching_events']}")
+            st.metric("Production Phase", latest['production_phase'])
+            st.line_chart(df_ultrasonic.set_index('timestamp')['distance_mm'].sort_index().tail(100))
+            with st.expander("📥 Show Recent Ultrasonic Readings", expanded=False):
+                show_cols = [
+                    c for c in [
+                        'timestamp', 'distance_mm', 'output_state',
+                        'switching_events', 'production_phase'
+                    ] if c in df_ultrasonic.columns
+                ]
+                if show_cols:
+                    st.dataframe(
+                        df_ultrasonic.head(10)[show_cols].set_index('timestamp'),
+                        use_container_width=True,
+                        height=300
+                    )
+                else:
+                    st.info("No matching columns for Ultrasonic Sensor table.")
         else:
-            st.caption(f"No data for Ultrasonic Sensor ({ULTRASONIC_CSV_FILENAME}).")
+            st.info("No data for Ultrasonic Sensor.")
 
-    # --- Update Inductive Sensor(s) Display ---
-    for sensor_id_key, inductive_csv_filename in INDUCTIVE_SENSOR_FILES.items():
-        inductive_data_file_path = CONVEYOR_DATA_DIR / inductive_csv_filename
-        df_inductive = load_sensor_data(inductive_data_file_path, f"Inductive ({sensor_id_key})")
-
-        with inductive_placeholders[sensor_id_key].container():
-            st.subheader(f"Inductive: {inductive_csv_filename} (ID: {sensor_id_key})")
-            if not df_inductive.empty:
-                required_ind_cols = ['timestamp', 'sensor_id', 'distance_to_target_mm', 'output_state', 'switching_function']
-                if not all(col in df_inductive.columns for col in required_ind_cols):
-                     st.error(f"Inductive CSV for {sensor_id_key} missing required columns.")
+    with col3:
+        st.subheader("🌡️ Heat Sensor")
+        df_heat = load_sensor_data(
+            CONVEYOR_DATA_DIR / "heat_PATOL5450-CB1-HOTSPOT_data.csv",
+            "Heat Sensor"
+        )
+        if not df_heat.empty:
+            latest = df_heat.iloc[0]
+            st.metric("Material Temperature", f"{latest['simulated_material_temp_c']:.1f}°C")
+            st.metric("Fire Alarm", "TRIPPED" if latest['fire_alarm_state'] else "NORMAL")
+            st.metric("Fault Status", "FAULT" if latest['fault_state'] else "OK")
+            st.line_chart(df_heat.set_index('timestamp')['simulated_material_temp_c'].tail(100))
+            with st.expander("📥 Show Recent Heat Readings", expanded=False):
+                show_cols = [c for c in ['timestamp', 'simulated_material_temp_c', 'fire_alarm_state', 'fault_state'] if c in df_heat.columns]
+                if show_cols:
+                    st.dataframe(
+                        df_heat.head(10)[show_cols].set_index('timestamp'),
+                        use_container_width=True,
+                        height=300
+                    )
                 else:
-                    latest_ind_point = df_inductive.iloc[-1]
-                    ind_cols = st.columns(5)
-                    ind_cols[0].metric("Time", latest_ind_point['timestamp'].strftime('%H:%M:%S'))
-                    ind_cols[1].metric("Sensor ID", str(latest_ind_point['sensor_id']))
-                    ind_cols[2].metric("Target Dist (mm)", f"{latest_ind_point['distance_to_target_mm']:.2f}")
-                    ind_cols[3].metric("Output", "DETECTED" if latest_ind_point['output_state'] == (1 if latest_ind_point['switching_function'] == "NO" else 0) else "NOT DETECTED")
-                    ind_cols[4].metric("Switch Func", str(latest_ind_point['switching_function']))
+                    st.info("No matching columns for Heat Sensor table.")
+        else:
+            st.info("No data for Heat Sensor.")
 
-                    st.caption(f"Recent Inductive Readings ({sensor_id_key}) (Time Series Data)")
-                    st.dataframe(df_inductive.tail(5).set_index('timestamp'), use_container_width=True)
+    st.divider()
+    # Conveyor Belt Touchswitch TS2V4AI
+    st.subheader("🔧 Conveyor Belt Alignment (4B Touchswitch)")
+    df_touchswitch_conv = load_sensor_data(
+        CONVEYOR_DATA_DIR / "touchswitch_conveyor.csv",
+        "Conveyor Touchswitch"
+    )
+    if not df_touchswitch_conv.empty:
+        latest = df_touchswitch_conv.iloc[0]
+        col1, col2 = st.columns(2)
+        col1.metric("Alignment Status", "MISALIGNED 🔴" if latest['alignment_status'] else "OK ✅")
+        col2.metric("Alerts", latest['alerts'])
+        with st.expander("📥 Recent Conveyor Alignment Data"):
+            st.dataframe(
+                df_touchswitch_conv[['timestamp', 'alignment_status', 'alerts']].set_index('timestamp').head(10),
+                use_container_width=True
+            )
+    else:
+        st.info("No conveyor alignment data available.")
 
-                    st.caption(f"Inductive Target Distance Over Time ({sensor_id_key})") # Caption for the chart
-                    st.line_chart(df_inductive.set_index('timestamp')[['distance_to_target_mm']].tail(200), use_container_width=True) # Chart added, showing last 200 points
+elif component == "Idler/Roller (Smart-Idler)":
+    st.subheader("Idler/Roller Monitoring (Smart-Idler)")
+    df_idler = load_sensor_data(
+        CONVEYOR_DATA_DIR / "smart_idler_data.csv",
+        "Smart-Idler"
+    )
+    if not df_idler.empty:
+        required_cols = ['timestamp', 'rpm', 'temp_left', 'temp_right',
+                         'vibration_rms', 'BPFI', 'BPFO', 'BSF', 'FTF', 'alerts']
+        if all(col in df_idler.columns for col in required_cols):
+            latest = df_idler.iloc[0]
+            cols = st.columns(4)
+            cols[0].metric("RPM", f"{latest['rpm']:.1f}")
+            cols[1].metric("Left Temp", f"{latest['temp_left']:.1f}°C")
+            cols[2].metric("Right Temp", f"{latest['temp_right']:.1f}°C")
+            cols[3].metric("Vibration", f"{latest['vibration_rms']:.2f} g")
+
+            alert_status = st.empty()
+            if latest['alerts'] != "NORMAL":
+                alert_status.error(f"🚨 Active Alerts: {latest['alerts']}")
             else:
-                st.caption(f"No data for Inductive Sensor ({inductive_csv_filename}).")
+                alert_status.success("✅ All systems normal")
 
-    # --- Update Heat Sensor(s) Display ---
-    for sensor_id_key, heat_csv_filename in HEAT_SENSOR_FILES.items():
-        heat_data_file_path = CONVEYOR_DATA_DIR / heat_csv_filename
-        df_heat = load_sensor_data(heat_data_file_path, f"Heat Sensor ({sensor_id_key})")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption("RPM Trend")
+                st.line_chart(df_idler.set_index('timestamp')['rpm'].tail(200))
 
-        with heat_sensor_placeholders[sensor_id_key].container():
-            st.subheader(f"Heat Sensor: {heat_csv_filename} (ID: {sensor_id_key})")
-            if not df_heat.empty:
-                required_heat_cols = ["timestamp", "sensor_id", "simulated_material_temp_c", "fire_alarm_state", "fault_state", "green_led_normal_status", "red_led_trip_status"]
-                if not all(col in df_heat.columns for col in required_heat_cols):
-                    st.error(f"Heat Sensor CSV for {sensor_id_key} missing required columns.")
-                else:
-                    latest_heat_point = df_heat.iloc[-1]
-                    hs_cols = st.columns(6)
-                    hs_cols[0].metric("Time", latest_heat_point['timestamp'].strftime('%H:%M:%S'))
-                    hs_cols[1].metric("Sensor ID", str(latest_heat_point['sensor_id']))
-                    hs_cols[2].metric("Material Temp (°C)", f"{latest_heat_point['simulated_material_temp_c']:.1f}")
+            with col2:
+                st.caption("Bearing Temperatures")
+                st.line_chart(df_idler.set_index('timestamp')[['temp_left', 'temp_right']].tail(200))
 
-                    fire_status = "ALARM" if latest_heat_point['fire_alarm_state'] == 1 else "Normal"
-                    hs_cols[3].metric("Fire Status", fire_status, delta_color=("inverse" if fire_status == "ALARM" else "off"))
+            st.caption("Vibration Frequencies")
+            vib_cols = st.columns(4)
+            vib_cols[0].metric("BPFI", f"{latest['BPFI']:.2f}")
+            vib_cols[1].metric("BPFO", f"{latest['BPFO']:.2f}")
+            vib_cols[2].metric("BSF", f"{latest['BSF']:.2f}")
+            vib_cols[3].metric("FTF", f"{latest['FTF']:.2f}")
 
-                    fault_status = "FAULT" if latest_heat_point['fault_state'] == 1 else "OK"
-                    hs_cols[4].metric("Sensor Fault", fault_status, delta_color=("inverse" if fault_status == "FAULT" else "off"))
+            with st.expander("📥 Recent Readings"):
+                st.dataframe(df_idler[required_cols].head(10).set_index('timestamp'))
+        else:
+            st.error("Smart-Idler data format mismatch!")
+    else:
+        st.info("No Smart-Idler data available.")
 
-                    led_status_text = []
-                    if latest_heat_point['green_led_normal_status'] == 1: led_status_text.append("🟢 Normal")
-                    if latest_heat_point['red_led_trip_status'] == 1: led_status_text.append("🔴 Trip")
-                    if not led_status_text: led_status_text.append("LEDs Off")
-                    hs_cols[5].markdown(f"**LEDs:** {', '.join(led_status_text)}")
+elif component == "Pulley":
+    st.subheader("🔧 Pulley Alignment (4B Touchswitch)")
+    df_touchswitch_pulley = load_sensor_data(
+        CONVEYOR_DATA_DIR / "touchswitch_pulley.csv",
+        "Pulley Touchswitch"
+    )
+    if not df_touchswitch_pulley.empty:
+        latest = df_touchswitch_pulley.iloc[0]
+        col1, col2 = st.columns(2)
+        col1.metric("Alignment Status", "MISALIGNED 🔴" if latest['alignment_status'] else "OK ✅")
+        col2.metric("Relay Status", "ALARM" if latest['relay_status'] == 0 else "NORMAL")
+        with st.expander("📥 Recent Pulley Alignment Data"):
+            st.dataframe(
+                df_touchswitch_pulley[['timestamp', 'alignment_status', 'relay_status', 'operational_mode']].set_index('timestamp').head(10),
+                use_container_width=True
+            )
+    else:
+        st.info("No pulley alignment data available.")
 
-                    st.caption(f"Recent Heat Sensor Readings ({sensor_id_key}) (Time Series Data)")
-                    st.dataframe(df_heat.tail(5).set_index('timestamp'), use_container_width=True)
-
-                    st.caption(f"Heat Sensor Material Temperature Over Time ({sensor_id_key})")
-                    st.line_chart(df_heat.set_index('timestamp')[['simulated_material_temp_c']].tail(200), use_container_width=True) # Showing last 200 points
+    # Incremental Encoder under Pulley
+    st.subheader("🔧 Incremental Encoder Monitoring")
+    df_encoder = load_sensor_data(
+        CONVEYOR_DATA_DIR / "incremental_encoder_data.csv",
+        "Incremental Encoder"
+    )
+    if not df_encoder.empty:
+        required_cols = ['timestamp', 'rpm', 'pulse_count', 'direction', 'status']
+        if all(col in df_encoder.columns for col in required_cols):
+            latest = df_encoder.iloc[0]
+            cols = st.columns(3)
+            cols[0].metric("RPM", f"{latest['rpm']:.1f}")
+            cols[1].metric("Direction", latest['direction'])
+            cols[2].metric("Total Pulses", f"{latest['pulse_count']:,}")
+            if latest['status'] != "NORMAL":
+                st.error(f"Encoder Status: {latest['status']}")
             else:
-                st.caption(f"No data for Heat Sensor ({heat_csv_filename}).")
+                st.success("Encoder Status: NORMAL")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption("RPM Trend (Last 100 Samples)")
+                st.line_chart(df_encoder.set_index('timestamp')['rpm'].tail(100))
+            with col2:
+                st.caption("Pulse Accumulation")
+                st.line_chart(df_encoder.set_index('timestamp')['pulse_count'].tail(100))
+            with st.expander("📥 Recent Encoder Readings"):
+                st.dataframe(df_encoder[required_cols].head(10).set_index('timestamp'))
+        else:
+            st.error("Encoder data format mismatch!")
+    else:
+        st.info("No encoder data available.")
 
-    time.sleep(2) # Refresh interval for the entire page
+current_time = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+st.divider()
+st.caption(f"Last Updated: {current_time} | Refresh Interval: {REFRESH_INTERVAL_MS // 1000}s")
