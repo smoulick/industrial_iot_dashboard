@@ -16,6 +16,9 @@ def generate_touchswitch_conveyor_data(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = output_path.exists() and output_path.stat().st_size > 0
 
+    # ... rest of your code ...
+
+
     thermal_fuse_blown = False
     last_alarm_start = None
     in_alarm = False
@@ -84,3 +87,6 @@ def generate_touchswitch_conveyor_data(
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Touchswitch conveyor simulation stopped")
+
+if __name__ == "__main__":
+    generate_touchswitch_conveyor_data()
