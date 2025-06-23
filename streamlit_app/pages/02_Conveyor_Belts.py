@@ -1,254 +1,313 @@
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 import pandas as pd
-import numpy as np
 from pathlib import Path
+from datetime import datetime
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
-import plotly.express as px
-from datetime import datetime
+import numpy as np
 
-# ----- Page Setup -----
 st.set_page_config(page_title="Conveyor Belt Monitoring", layout="wide")
-st.markdown("""<style>
-    html { scroll-behavior: smooth; }
-    .block-container { padding-top: 1rem; }
-</style>""", unsafe_allow_html=True)
 
 CONVEYOR_DATA_DIR = Path("data_output/conveyor_belt")
-REFRESH_INTERVAL_MS = 2000  # 2 seconds refresh
-
-st_autorefresh(interval=REFRESH_INTERVAL_MS, key="datarefresh")
 st.title("Conveyor Belt Monitoring Dashboard")
-
 with st.sidebar:
     st.title("Conveyor Components")
-    component = st.selectbox("Select Component", ["Default", "Idler/Roller (Smart-Idler)", "Pulley"])
-
-# ----- Utility Functions -----
-def load_sensor_data(path, name):
+    component = st.selectbox(
+        "Select Component",
+        [
+            "Default",
+            "Idler/Roller (Smart-Idler)",
+            "Pulley",
+            "Impact Bed"
+        ]
+    )
+# Load CSV safely
+def load_sensor_data(file_path):
     try:
-        df = pd.read_csv(path)
+        df = pd.read_csv(file_path)
         if 'timestamp' in df.columns:
             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
             df = df.sort_values('timestamp', ascending=False)
         return df
     except Exception as e:
-        st.error(f"Error loading {name}: {e}")
+        st.error(f"[load_sensor_data Error] {e}")
         return pd.DataFrame()
 
-def live_anomaly_detection(df, features):
-    if len(df) < 20: return None, None
-    X = StandardScaler().fit_transform(df[features].fillna(method='ffill'))
-    model = IsolationForest(contamination=0.05, random_state=42).fit(X)
-    scores = model.decision_function(X)
-    anns = model.predict(X)
-    return scores, anns
+# Inject fault into last n rows
+def inject_fault_in_last_n_rows(df, inputs, n=5):
+    for key, val in inputs.items():
+        if key in df.columns:
+            df.loc[:n, key] = val
+    return df
 
-def live_rul_prediction(df, features, evt):
-    if len(df) < 20: return None
-    df2 = df.copy()
-    df2['rul'] = 100 - df2[evt].cumsum()
-    X = df2[features].fillna(0)
-    y = df2['rul'].clip(lower=0)
-    model = xgb.XGBRegressor(n_estimators=100, random_state=42).fit(X, y)
-    return model.predict(X)
+# Anomaly Detection
+def live_anomaly_detection(data, feature_cols):
+    if len(data) < 20:
+        return None, None
+    features = data[feature_cols].copy().apply(pd.to_numeric, errors='coerce').fillna(0)
+    scaler = StandardScaler().fit(features)
+    model = IsolationForest(contamination=0.05, random_state=42).fit(scaler.transform(features))
+    scores = model.decision_function(scaler.transform(features))
+    anomalies = model.predict(scaler.transform(features))
+    return scores, anomalies
 
-# ----- Default Sensors Block -----
-if component == "Default":
+# RUL Prediction
+def live_rul_prediction(data, feature_cols, event_col):
+    if len(data) < 20:
+        return None
+    data = data.copy()
+    data[event_col] = pd.to_numeric(data[event_col], errors='coerce').replace([np.inf, -np.inf], np.nan).fillna(0)
+    features = data[feature_cols].apply(pd.to_numeric, errors='coerce').replace([np.inf, -np.inf], np.nan).fillna(0)
+    data['rul'] = 100 - data[event_col].cumsum()
+    target = data['rul'].clip(lower=0)
+    mask = (~features.isna().any(axis=1)) & (~target.isna())
+    features, target = features[mask], target[mask]
+    if len(features) < 1:
+        return None
+    model = xgb.XGBRegressor(n_estimators=100, random_state=42)
+    model.fit(features, target)
+    predictions = model.predict(features)
+    return predictions
 
-    # Inductive
-    with st.container():
-        st.subheader("🔄 Inductive Sensor")
-        df = load_sensor_data(CONVEYOR_DATA_DIR / "inductive_NBN40-CB1-PRESENCE_data.csv", "Inductive Sensor")
-        if not df.empty:
-            latest = df.iloc[0]
-            st.metric("Distance", f"{latest['distance_to_target_mm']:.1f} mm")
-            st.metric("Detection", "OBJECT" if latest['output_state'] else "CLEAR")
-            st.line_chart(df.set_index('timestamp')['distance_to_target_mm'].tail(100))
-            with st.expander("🤖 ML: Anomaly + RUL"):
-                try:
-                    s, a = live_anomaly_detection(df, ['distance_to_target_mm'])
-                    if s is not None:
-                        df['an_score'], df['is_anomaly'] = s, a
-                        st.plotly_chart(px.line(df, x='timestamp', y='an_score', title="Anomaly Score"))
-                        st.metric("Status", "🚨 Anomaly" if a[0]==-1 else "✅ Normal")
-                        preds = live_rul_prediction(df, ['distance_to_target_mm'], 'output_state')
-                        if preds is not None:
-                            st.plotly_chart(px.line(df, x='timestamp', y=preds, title="RUL Trend"))
-                            st.metric("RUL", f"{preds[0]:.1f}")
-                    else: st.info("Need 20+ rows")
-                except Exception as e:
-                    st.error(f"ML error: {e}")
-                st.dataframe(df.head(20).set_index('timestamp'))
-        else:
-            st.warning("No Inductive data")
+# Generic Sensor Block
+def sensor_section(sensor_label, file_name, inject_form, feature_cols, event_col=None, rul_features=None):
+    try:
+        st.subheader(sensor_label)
+        file_path = CONVEYOR_DATA_DIR / file_name
+        df = load_sensor_data(file_path)
+        key_base = file_name.replace('.', '_')
 
-    # Ultrasonic
-    with st.container():
-        st.subheader("📏 Ultrasonic Sensor")
-        df = load_sensor_data(CONVEYOR_DATA_DIR / "ultrasonic_UB800-CB1-MAIN_data.csv", "Ultrasonic Sensor")
-        if not df.empty:
-            latest = df.iloc[0]
-            st.metric("Distance", f"{latest['distance_mm']:.1f} mm")
-            st.metric("Switches", latest['switching_events'])
-            st.line_chart(df.set_index('timestamp')['distance_mm'].tail(100))
-            with st.expander("🤖 ML: Anomaly + RUL"):
-                try:
-                    s, a = live_anomaly_detection(df, ['distance_mm'])
-                    if s is not None:
-                        df['an_score'], df['is_anomaly'] = s, a
-                        st.plotly_chart(px.line(df, x='timestamp', y='an_score', title="Anomaly Score"))
-                        st.metric("Status", "🚨 Anomaly" if a[0]==-1 else "✅ Normal")
-                        preds = live_rul_prediction(df, ['distance_mm'], 'output_state')
-                        if preds is not None:
-                            st.plotly_chart(px.line(df, x='timestamp', y=preds, title="RUL Trend"))
-                            st.metric("RUL", f"{preds[0]:.1f}")
-                    else: st.info("Need 20+ rows")
-                except Exception as e:
-                    st.error(f"ML error: {e}")
-                st.dataframe(df.head(20).set_index('timestamp'))
-        else:
-            st.warning("No Ultrasonic data")
+        with st.expander(f"Inject Anomaly ({sensor_label})", expanded=True):
+            with st.form(key=f"{key_base}_form"):
+                inputs = inject_form()
+                submit = st.form_submit_button("Inject")
+                if submit:
+                    if df.empty:
+                        st.warning("Cannot inject fault: no existing data.")
+                    else:
+                        df = inject_fault_in_last_n_rows(df, inputs, n=5)
+                        df.to_csv(file_path, index=False)
+                        st.success("Anomaly injected!")
+                        st.rerun()
 
-    # Heat
-    with st.container():
-        st.subheader("🌡️ Heat Sensor")
-        df = load_sensor_data(CONVEYOR_DATA_DIR / "heat_PATOL5450-CB1-HOTSPOT_data.csv", "Heat Sensor")
-        if not df.empty:
-            latest = df.iloc[0]
-            st.metric("Temp", f"{latest['simulated_material_temp_c']:.1f}°C")
-            st.metric("Fire Alarm", "TRIPPED" if latest['fire_alarm_state'] else "NORMAL")
-            st.line_chart(df.set_index('timestamp')['simulated_material_temp_c'].tail(100))
-            with st.expander("🤖 ML: Anomaly + RUL"):
-                try:
-                    s, a = live_anomaly_detection(df, ['simulated_material_temp_c'])
-                    if s is not None:
-                        df['an_score'], df['is_anomaly'] = s, a
-                        st.plotly_chart(px.line(df, x='timestamp', y='an_score', title="Anomaly Score"))
-                        st.metric("Status", "🚨 Anomaly" if a[0]==-1 else "✅ Normal")
-                        preds = live_rul_prediction(df, ['simulated_material_temp_c'], 'fire_alarm_state')
-                        if preds is not None:
-                            st.plotly_chart(px.line(df, x='timestamp', y=preds, title="RUL Trend"))
-                            st.metric("RUL", f"{preds[0]:.1f}")
-                    else: st.info("Need 20+ rows")
-                except Exception as e:
-                    st.error(f"ML error: {e}")
-                st.dataframe(df.head(20).set_index('timestamp'))
-        else:
-            st.warning("No Heat data")
+        if df.empty:
+            st.warning("No data available for this sensor.")
+            return
 
-    # Touchswitch Conveyor
-    with st.container():
-        st.subheader("🔧 Touchswitch Conveyor")
-        df = load_sensor_data(CONVEYOR_DATA_DIR / "touchswitch_conveyor.csv", "Touchswitch Conveyor")
-        if not df.empty:
-            latest = df.iloc[0]
-            st.metric("Alignment", "MISALIGNED 🔴" if latest['alignment_status'] else "OK ✅")
-            st.metric("Alerts", latest['alerts'])
-            with st.expander("🤖 ML: Anomaly + RUL"):
-                try:
-                    s, a = live_anomaly_detection(df, ['measured_force', 'operational_mode'])
-                    if s is not None:
-                        df['an_score'], df['is_anomaly'] = s, a
-                        st.plotly_chart(px.line(df, x='timestamp', y='an_score', title="Anomaly Score"))
-                        st.metric("Status", "🚨 Anomaly" if a[0]==-1 else "✅ Normal")
-                        preds = live_rul_prediction(df, ['measured_force', 'operational_mode', 'thermal_fuse_blown'], 'alignment_status')
-                        if preds is not None:
-                            st.plotly_chart(px.line(df, x='timestamp', y=preds, title="RUL Trend"))
-                            st.metric("RUL", f"{preds[0]:.1f}")
-                    else: st.info("Need 20+ rows")
-                except Exception as e:
-                    st.error(f"ML error: {e}")
-                st.dataframe(df.head(20).set_index('timestamp'))
-        else:
-            st.warning("No Touchswitch data")
+        for col in feature_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
-# ----- SMART-IDLER -----
-elif component == "Idler/Roller (Smart-Idler)":
-    st.subheader("🛞 Smart Idler Monitoring")
-    df = load_sensor_data(CONVEYOR_DATA_DIR / "smart_idler_data.csv", "Smart-Idler")
-    if not df.empty:
-        latest = df.iloc[0]
-        st.metric("RPM", f"{latest['rpm']:.1f}")
-        st.metric("Vibration", f"{latest['vibration_rms']:.2f} g")
-        st.metric("Left Temp", f"{latest['temp_left']:.1f}°C")
-        st.metric("Right Temp", f"{latest['temp_right']:.1f}°C")
-        with st.expander("🤖 ML: Anomaly + RUL"):
+        try:
+            latest_val = df[feature_cols[0]].iloc[0]
+            st.metric("Latest Reading", f"{latest_val:.2f}")
+        except Exception as e:
+            st.warning(f"Could not display metric: {e}")
+
+        try:
+            st.line_chart(df.set_index('timestamp')[feature_cols[0]].tail(100))
+        except Exception as e:
+            st.warning(f"Could not render chart: {e}")
+
+        with st.expander("ML Insights (Anomaly & RUL)", expanded=False):
             try:
-                s, a = live_anomaly_detection(df, ['rpm', 'vibration_rms', 'temp_left', 'temp_right'])
-                if s is not None:
-                    df['an_score'], df['is_anomaly'] = s, a
-                    st.plotly_chart(px.line(df, x='timestamp', y='an_score', title="Anomaly Score"))
-                    st.metric("Status", "🚨 Anomaly" if a[0]==-1 else "✅ Normal")
-                    preds = live_rul_prediction(df, ['rpm', 'vibration_rms', 'temp_left', 'temp_right'], 'vibration_rms')
-                    if preds is not None:
-                        st.plotly_chart(px.line(df, x='timestamp', y=preds, title="RUL Trend"))
-                        st.metric("RUL", f"{preds[0]:.1f}")
-                else: st.info("Need 20+ rows")
+                scores, anomalies = live_anomaly_detection(df, feature_cols)
+                if scores is not None:
+                    df['anomaly_score'], df['is_anomaly'] = scores, anomalies
+                    st.metric("Anomaly", "🚨" if df.iloc[0]['is_anomaly'] == -1 else "✅")
+                    st.line_chart(df.set_index('timestamp')['anomaly_score'].tail(100))
+                    if event_col and rul_features:
+                        predictions = live_rul_prediction(df, rul_features, event_col)
+                        if predictions is not None:
+                            st.line_chart(pd.Series(predictions, index=df['timestamp'].head(len(predictions))))
+                            st.metric("RUL", f"{predictions[0]:.1f}")
+                else:
+                    st.info("Need 20+ rows for ML.")
             except Exception as e:
-                st.error(f"ML error: {e}")
-            st.dataframe(df.head(20).set_index('timestamp'))
-    else:
-        st.warning("No Smart-Idler data")
+                st.error(f"[ML Error] {sensor_label}: {e}")
 
-# ----- PULLEY TOUCHSWITCH & ENCODER -----
+        try:
+            st.dataframe(df.head(20).set_index("timestamp"))
+        except Exception as e:
+            st.warning(f"Could not display table: {e}")
+
+    except Exception as e:
+        st.error(f"[Sensor Block Crash] {sensor_label}: {e}")
+
+# ---------- DEFAULT SECTION ----------
+if component == "Default":
+    st.markdown("### 🟢 Default Section")
+
+    default_sensor = st.selectbox(
+        "Select Sensor to View",
+        ["Inductive", "Ultrasonic", "Heat", "Touchswitch Conveyor"],
+        key="default_sensor_select"
+    )
+
+    if default_sensor == "Inductive":
+        try:
+            sensor_section(
+                sensor_label="🔄 Inductive Sensor",
+                file_name="inductive_NBN40-CB1-PRESENCE_data.csv",
+                inject_form=lambda: {
+                    "distance_to_target": st.number_input("Distance to Target (mm)", value=50.0, key="inductive_distance"),
+                    "output_state": st.selectbox("Output State", [0, 1], key="inductive_output")
+                },
+                feature_cols=["distance_to_target"],
+                event_col="output_state",
+                rul_features=["distance_to_target"]
+            )
+        except Exception as e:
+            st.error(f"[Inductive Sensor Error] {e}")
+
+    elif default_sensor == "Ultrasonic":
+        try:
+            sensor_section(
+                sensor_label="📏 Ultrasonic Sensor",
+                file_name="ultrasonic_UB800-CB1-MAIN_data.csv",
+                inject_form=lambda: {
+                    "distance_mm": st.number_input("Ultrasonic Distance (mm)", value=900.0, key="ultrasonic_distance"),
+                    "output_state": st.selectbox("Ultrasonic Output State", [0, 1], key="ultrasonic_output")
+                },
+                feature_cols=["distance_mm"],
+                event_col="output_state",
+                rul_features=["distance_mm"]
+            )
+        except Exception as e:
+            st.error(f"[Ultrasonic Sensor Error] {e}")
+
+    elif default_sensor == "Heat":
+        try:
+            sensor_section(
+                sensor_label="🌡️ Heat Sensor",
+                file_name="heat_PATOL5450-CB1-HOTSPOT_data.csv",
+                inject_form=lambda: {
+                    "simulated_material_temp_c": st.number_input("Material Temp (°C)", value=120.0, key="heat_temp"),
+                    "fire_alarm_state": st.selectbox("Fire Alarm State", [0, 1], key="heat_alarm")
+                },
+                feature_cols=["simulated_material_temp_c"],
+                event_col="fire_alarm_state",
+                rul_features=["simulated_material_temp_c"]
+            )
+        except Exception as e:
+            st.error(f"[Heat Sensor Error] {e}")
+
+    elif default_sensor == "Touchswitch Conveyor":
+        try:
+            sensor_section(
+                sensor_label="🔧 Touchswitch Conveyor",
+                file_name="touchswitch_conveyor.csv",
+                inject_form=lambda: {
+                    "measured_force": st.number_input("Measured Force (kg)", value=4.0, key="touch_force"),
+                    "alignment_status": st.selectbox("Alignment Status", [0, 1], key="touch_align"),
+                    "operational_mode": st.selectbox("Operational Mode", [0, 1], key="touch_mode"),
+                    "thermal_fuse_blown": st.selectbox("Thermal Fuse Blown", [0, 1], key="touch_fuse")
+                },
+                feature_cols=["measured_force", "operational_mode"],
+                event_col="alignment_status",
+                rul_features=["measured_force", "operational_mode", "thermal_fuse_blown"]
+            )
+        except Exception as e:
+            st.error(f"[Touchswitch Sensor Error] {e}")
+
+# -------------------- SMART IDLER --------------------
+elif component == "Idler/Roller (Smart-Idler)":
+    sensor_section(
+        "Smart Idler",
+        "smart_idler_data.csv",
+        lambda: {
+            "rpm": st.number_input("RPM", value=2000.0),
+            "temp_left": st.number_input("Left Temp (°C)", value=90.0),
+            "temp_right": st.number_input("Right Temp (°C)", value=90.0),
+            "vibration_rms": st.number_input("Vibration RMS", value=3.0),
+            "BPFI": st.number_input("BPFI", value=0.0),
+            "BPFO": st.number_input("BPFO", value=0.0),
+            "BSF": st.number_input("BSF", value=0.0),
+            "FTF": st.number_input("FTF", value=0.0),
+            "alerts": st.text_input("Alerts", value="OVERHEAT")
+        },
+        feature_cols=["rpm", "vibration_rms", "temp_left", "temp_right"],
+        event_col="vibration_rms",
+        rul_features=["rpm", "vibration_rms", "temp_left", "temp_right"]
+    )
+
+# -------------------- PULLEY --------------------
 elif component == "Pulley":
+    sensor_section(
+        "Touchswitch Pulley",
+        "touchswitch_pulley.csv",
+        lambda: {
+            "measured_force": st.number_input("Measured Force (kg)", value=4.0),
+            "alignment_status": st.selectbox("Alignment Status", [0, 1]),
+            "operational_mode": st.selectbox("Operational Mode", [0, 1]),
+            "relay_status": st.selectbox("Relay Status", [0, 1]),
+            "thermal_fuse_blown": st.selectbox("Thermal Fuse Blown", [0, 1])
+        },
+        feature_cols=["measured_force", "operational_mode"],
+        event_col="alignment_status",
+        rul_features=["measured_force", "operational_mode", "thermal_fuse_blown"]
+    )
 
-    # Touchswitch
-    with st.container():
-        st.subheader("🔧 Pulley Alignment (Touchswitch)")
-        df = load_sensor_data(CONVEYOR_DATA_DIR / "touchswitch_pulley.csv", "Pulley Touchswitch")
-        if not df.empty:
-            latest = df.iloc[0]
-            st.metric("Alignment", "MISALIGNED 🔴" if latest['alignment_status'] else "OK ✅")
-            st.metric("Relay", "ALARM" if latest['relay_status'] == 0 else "NORMAL")
-            with st.expander("🤖 ML: Anomaly + RUL"):
-                try:
-                    s, a = live_anomaly_detection(df, ['measured_force', 'operational_mode'])
-                    if s is not None:
-                        df['an_score'], df['is_anomaly'] = s, a
-                        st.plotly_chart(px.line(df, x='timestamp', y='an_score', title="Anomaly Score"))
-                        st.metric("Status", "🚨 Anomaly" if a[0]==-1 else "✅ Normal")
-                        preds = live_rul_prediction(df, ['measured_force', 'operational_mode', 'thermal_fuse_blown'], 'alignment_status')
-                        if preds is not None:
-                            st.plotly_chart(px.line(df, x='timestamp', y=preds, title="RUL Trend"))
-                            st.metric("RUL", f"{preds[0]:.1f}")
-                    else: st.info("Need 20+ rows")
-                except Exception as e:
-                    st.error(f"ML error: {e}")
-                st.dataframe(df.head(20).set_index('timestamp'))
-        else:
-            st.warning("No Pulley Touchswitch data")
+    sensor_section(
+        "Incremental Encoder",
+        "incremental_encoder_data.csv",
+        lambda: {
+            "rpm": st.number_input("RPM", value=7000.0),
+            "pulse_count": st.number_input("Pulse Count", value=100),
+            "direction": st.selectbox("Direction", ["FORWARD", "REVERSE"]),
+            "status": st.text_input("Status", value="FAULT")
+        },
+        feature_cols=["rpm", "pulse_count"],
+        event_col="rpm",
+        rul_features=["rpm", "pulse_count"]
+    )
 
-    # Encoder
-    with st.container():
-        st.subheader("🔁 Incremental Encoder Monitoring")
-        df = load_sensor_data(CONVEYOR_DATA_DIR / "incremental_encoder_data.csv", "Encoder")
-        if not df.empty:
-            latest = df.iloc[0]
-            st.metric("RPM", f"{latest['rpm']:.1f}")
-            st.metric("Direction", latest['direction'])
-            st.metric("Pulses", latest['pulse_count'])
-            with st.expander("🤖 ML: Anomaly + RUL"):
-                try:
-                    s, a = live_anomaly_detection(df, ['rpm', 'pulse_count'])
-                    if s is not None:
-                        df['an_score'], df['is_anomaly'] = s, a
-                        st.plotly_chart(px.line(df, x='timestamp', y='an_score', title="Anomaly Score"))
-                        st.metric("Status", "🚨 Anomaly" if a[0]==-1 else "✅ Normal")
-                        preds = live_rul_prediction(df, ['rpm', 'pulse_count'], 'rpm')
-                        if preds is not None:
-                            st.plotly_chart(px.line(df, x='timestamp', y=preds, title="RUL Trend"))
-                            st.metric("RUL", f"{preds[0]:.1f}")
-                    else: st.info("Need 20+ rows")
-                except Exception as e:
-                    st.error(f"ML error: {e}")
-                st.dataframe(df.head(20).set_index('timestamp'))
-        else:
-            st.warning("No Encoder data")
+elif component == "Impact Bed":
+    st.markdown("### 🟣 Impact Bed Section")
 
-# ----- FOOTER -----
+    impact_sensor = st.selectbox(
+        "Select Impact Bed Sensor",
+        ["Accelerometer", "Load Cell"],
+        key="impact_sensor_select"
+    )
+
+    if impact_sensor == "Accelerometer":
+        try:
+            sensor_section(
+                sensor_label="📈 Impact Bed Accelerometer",
+                file_name="impact_bed_accelerometer.csv",
+                inject_form=lambda: {
+                    "accel_x_g": st.number_input("Accel X (g)", value=60.0, key="impact_accel_x"),
+                    "vibration_rms_g": st.number_input("Vibration RMS (g)", value=60.0, key="impact_vib_rms"),
+                    "impact_peak_g": st.number_input("Impact Peak (g)", value=60.0, key="impact_peak"),
+                    "impact_event": st.selectbox("Impact Event", [0, 1], key="impact_event_accel")
+                },
+                feature_cols=["accel_x_g"],
+                event_col="impact_event",
+                rul_features=["accel_x_g"]
+            )
+        except Exception as e:
+            st.error(f"[Impact Accelerometer Error] {e}")
+
+    elif impact_sensor == "Load Cell":
+        try:
+            sensor_section(
+                sensor_label="🪵 Impact Bed Load Cell",
+                file_name="impact_bed_load_cell.csv",
+                inject_form=lambda: {
+                    "applied_load_kN": st.number_input("Applied Load (kN)", value=1200.0, key="impact_load"),
+                    "mv_per_v": st.number_input("mV/V Output", value=0.0, key="impact_mv_per_v"),
+                    "impact_event": st.selectbox("Impact Event", [0, 1], key="impact_event_load")
+                },
+                feature_cols=["applied_load_kN"],
+                event_col="impact_event",
+                rul_features=["applied_load_kN"]
+            )
+        except Exception as e:
+            st.error(f"[Impact Load Cell Error] {e}")
+
+# --- Footer ---
+current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 st.divider()
-st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Refresh: {REFRESH_INTERVAL_MS // 1000}s")
+st.caption(f"Last Updated: {current_time}")
+
