@@ -41,3 +41,4 @@ plotly
 openpyxl
 matplotlib
 seaborn
+scikit-learn
