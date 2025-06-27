@@ -5,6 +5,7 @@ import time
 import csv
 import logging
 from pathlib import Path
+from math import cos, pi
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 def generate_realistic_inductive_data(
         output_file_path,
         sensor_id: str = "NBN40-U1-E2-V1",
-        time_interval_seconds: float = 0.02,
+        time_interval_seconds: float = 0.1,
         rated_operating_distance_mm: float = 40,
         hysteresis_percent: float = 0.05,
         switching_function: str = "NO",
@@ -69,25 +70,20 @@ def generate_realistic_inductive_data(
                 if run_duration_seconds and (datetime.now() - sim_start_time).total_seconds() > run_duration_seconds:
                     break
 
-                timestamp = datetime.now()
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
                 current_time = time.time()
 
-                # Determine if an object should be present based on conveyor pattern
                 time_since_last_object = current_time - last_object_time
                 time_in_cycle = time_since_last_object % time_between_objects
 
+                # Define two realistic states
+                object_detected_distance = 53  # mm
+                no_object_distance = 58  # mm
+
                 if time_in_cycle < object_detection_time:
-                    # Object is passing - create realistic distance profile
-                    progress = time_in_cycle / object_detection_time
-                    if progress < 0.5:
-                        # Object approaching sensor
-                        distance_to_target = turn_on_distance * (1 - 2 * progress) + np.random.normal(0, 0.5)
-                    else:
-                        # Object moving away from sensor
-                        distance_to_target = turn_on_distance * (2 * progress - 1) + np.random.normal(0, 0.5)
+                    distance_to_target = object_detected_distance + np.random.normal(0, 0.3)
                 else:
-                    # No object present - distance beyond detection range
-                    distance_to_target = turn_off_distance + 20 + np.random.normal(0, 2)
+                    distance_to_target = no_object_distance + np.random.normal(0, 0.3)
 
                 distance_to_target = max(0, distance_to_target)
 
@@ -112,7 +108,7 @@ def generate_realistic_inductive_data(
                 last_electrical_output_state = current_electrical_output_state
 
                 csv_writer.writerow([
-                    timestamp.isoformat(),
+                    timestamp,
                     sensor_id,
                     round(distance_to_target, 2),
                     current_electrical_output_state,

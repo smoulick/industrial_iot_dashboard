@@ -3,12 +3,13 @@ from datetime import datetime
 import os
 import time
 import math
+import random
 
 def generate_mill_shell_vibration_data_stream(output_path, run_duration_seconds=None):
-    # Sensor parameters
-    VIBRATION_MIN, VIBRATION_MAX = 0.0, 10.0  # g (acceleration)
-    TEMP_MIN, TEMP_MAX = 20, 90               # degrees Celsius
-    time_interval_sec = 10                    # seconds between data points
+    # Sensor limits from datasheet
+    VIBRATION_MIN, VIBRATION_MAX = -50.0, 50.0   # g
+    TEMP_MIN, TEMP_MAX = 2.0, 121.0              # °C
+    time_interval_sec = 10                       # Interval between readings
 
     header = ["timestamp", "vibration_g", "temperature_c"]
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -19,52 +20,57 @@ def generate_mill_shell_vibration_data_stream(output_path, run_duration_seconds=
     row_count = 0
     start_time = time.time()
 
-    # Deterministic process parameters
-    event_trigger_time = 5 * 60      # seconds (event at 5 min)
-    event_duration = 2 * 60          # seconds (event lasts 2 min)
-    event_vibration_spike = 5.0      # g
-    event_temp_spike = 10.0          # °C
+    # Event simulation (e.g., fault or overload)
+    event_trigger_time = 5 * 60           # 5 minutes
+    event_duration = 2 * 60               # 2 minutes
+    event_vibration_spike = 15.0          # g, added on top
+    event_temp_spike = 15.0               # °C, added
 
-    print(f"Starting deterministic Mill Shell Vibration data generation to {output_path} (Ctrl+C to stop)")
+    print(f"Streaming Mill Shell Vibration Data to {output_path} (Press Ctrl+C to stop)\n")
 
     try:
-        while (run_duration_seconds is None) or (time.time() - start_time < run_duration_seconds):
+        while run_duration_seconds is None or (time.time() - start_time < run_duration_seconds):
             elapsed = row_count * time_interval_sec
-            # Vibration: base periodic + deterministic event
-            base_vibration = 2.0 + 1.5 * (1 + math.sin(2 * math.pi * (elapsed / 60) / 1))  # 1-min period
 
-            # Event: sudden spike in vibration and temp
+            # Periodic base vibration (simulate rotating machinery)
+            base_vibration = 10.0 * math.sin(2 * math.pi * (elapsed / 60) / 2) + random.uniform(-1, 1)
+
+            # Temperature baseline with slow rise
+            base_temperature = 30.0 + 0.01 * elapsed + random.uniform(-0.5, 0.5)
+
+            # During event: vibration + spike, temperature + spike
             if event_trigger_time <= elapsed < event_trigger_time + event_duration:
                 vibration = base_vibration + event_vibration_spike
-                temperature = 30 + 0.02 * elapsed + event_temp_spike
-            # After event: vibration and temp return to normal/plateau
+                temperature = base_temperature + event_temp_spike
             elif elapsed >= event_trigger_time + event_duration:
+                # Cooldown after event
                 vibration = base_vibration
-                temperature = min(60, 30 + 0.02 * event_trigger_time + event_temp_spike + 0.005 * (elapsed - event_trigger_time - event_duration))
-            # Before event: normal operation
+                temperature = base_temperature + event_temp_spike * math.exp(-0.01 * (elapsed - event_trigger_time - event_duration))
             else:
                 vibration = base_vibration
-                temperature = 30 + 0.02 * elapsed
+                temperature = base_temperature
 
+            # Clamp to sensor limits
             vibration = max(VIBRATION_MIN, min(vibration, VIBRATION_MAX))
             temperature = max(TEMP_MIN, min(temperature, TEMP_MAX))
 
+            # Write to CSV
             timestamp = datetime.now().isoformat()
-            new_row = pd.DataFrame([{
+            row = pd.DataFrame([{
                 "timestamp": timestamp,
                 "vibration_g": round(vibration, 3),
                 "temperature_c": round(temperature, 2)
             }])
-            new_row.to_csv(output_path, mode='a', header=False, index=False)
+            row.to_csv(output_path, mode='a', header=False, index=False)
 
-            print(f"Wrote row {row_count+1}: Vibration={vibration:.3f}g, Temperature={temperature:.2f}C")
+            print(f"[{timestamp}] Vibration: {vibration:.3f}g | Temp: {temperature:.2f}°C")
             row_count += 1
             time.sleep(time_interval_sec)
 
     except KeyboardInterrupt:
-        print("\nMill Shell Vibration data generation stopped by user.")
+        print("\nStopped by user.")
 
-# For standalone testing (optional)
+# Standalone run
 if __name__ == "__main__":
     generate_mill_shell_vibration_data_stream(
         r"D:\Project\industrial_iot_dashboard\data_output\ball_mill\mill_shell_vibration_data.csv"

@@ -61,9 +61,10 @@ def generate_realistic_ultrasonic_data(
                 if run_duration_seconds and (datetime.now() - sim_start_time).total_seconds() > run_duration_seconds:
                     break
 
-                timestamp = datetime.now()
-                current_hour = timestamp.hour
-                uptime = (timestamp - sim_start_time).total_seconds()
+                now = datetime.now()
+                timestamp = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                current_hour = now.hour
+                uptime = (now - sim_start_time).total_seconds()
 
                 # Check if in production hours
                 is_production_active = shift_hours[0] <= current_hour <= shift_hours[1]
@@ -126,7 +127,7 @@ def generate_realistic_ultrasonic_data(
                 last_output_state = current_output_state
 
                 csv_writer.writerow([
-                    timestamp.isoformat(),
+                    timestamp,
                     sensor_id,
                     round(distance_mm, 1),
                     current_output_state,

@@ -68,8 +68,9 @@ def generate_realistic_heat_data(
                 if run_duration_seconds and (datetime.now() - sim_start_time).total_seconds() > run_duration_seconds:
                     break
 
-                timestamp = datetime.now()
-                current_hour = timestamp.hour
+                now = datetime.now()
+                timestamp = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                current_hour = now.hour
 
                 # Base temperature with daily cycle (within datasheet operating range -20°C to +70°C)
                 base_temp = 25.0
@@ -90,9 +91,11 @@ def generate_realistic_heat_data(
                 # Check for hot spot scenarios
                 hot_spot_temp = 0
 
-                # Remove expired hot spots
-                active_hot_spots = [spot for spot in active_hot_spots
-                                    if (timestamp - spot["start_time"]).total_seconds() < spot["duration"] * 60]
+                active_hot_spots = [
+                    spot for spot in active_hot_spots
+                    if (now - datetime.strptime(spot["start_time"], "%Y-%m-%d %H:%M:%S.%f")).total_seconds() < spot[
+                        "duration"] * 60
+                ]
 
                 # Generate new hot spots
                 for scenario_name, scenario_config in hot_spot_scenarios.items():
@@ -134,7 +137,7 @@ def generate_realistic_heat_data(
                     red_led_trip = 0  # Green LED on during normal operation
 
                 csv_writer.writerow([
-                    timestamp.isoformat(),
+                    timestamp,
                     sensor_id,
                     round(current_material_temp, 2),
                     fire_alarm_state,

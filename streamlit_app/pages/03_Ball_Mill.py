@@ -1,12 +1,19 @@
 import streamlit as st
+st.set_page_config(page_title="Ball Mill Monitoring", layout="wide")
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
 from pathlib import Path
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
+from pathlib import Path
 
-st.set_page_config(page_title="Ball Mill Monitoring", layout="wide")
+css_path = Path(__file__).parent.parent / "assets" / "styles.css"
+with open(css_path) as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+
+
 st.title("Ball/Rod Mill Monitoring")
 
 BALL_MILL_DATA_DIR = Path("data_output/ball_mill")
