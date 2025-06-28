@@ -1,7 +1,7 @@
 import streamlit as st
-
-# ✅ MUST BE FIRST Streamlit command
 st.set_page_config(page_title="Conveyor Belt Monitoring", layout="wide")
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=5000, key="ballmill_autorefresh")
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
@@ -430,8 +430,8 @@ elif component == "Pulley":
             )
             st.dataframe(styled, use_container_width=True)
 
-    elif component == "Pulley":
-        path = CONVEYOR_DATA_DIR / "pulley_incremental_encoder.csv"
+    elif pulley_sensor == "Incremental Encoder":
+        path = CONVEYOR_DATA_DIR / "incremental_encoder_data.csv"
         if path.exists():
             df = load_sensor_data(path)
 
@@ -511,7 +511,6 @@ elif component == "Impact Bed":
        path = CONVEYOR_DATA_DIR / "impact_bed_load_cell.csv"
        if path.exists():
         df = load_sensor_data(path)
-
         st.subheader("🔵 Impact Bed – Load Cell")
 
         # Add event + RUL
@@ -582,13 +581,13 @@ elif component == "Impact Bed":
         )
         st.dataframe(styled, use_container_width=True)
 
-    elif component == "Impact Bed":
+    elif impact_sensor == "Accelerometer":
         path = CONVEYOR_DATA_DIR / "impact_bed_accelerometer.csv"
         if path.exists():
             df = load_sensor_data(path)
-
             st.subheader("🟣 Impact Bed – Accelerometer (ADXL1001)")
-
+            st.success("🟣 Accelerometer block is loading")
+            st.write(df.tail())
             # Add event + RUL
             df['event'] = df['impact_event']
             df['rul'] = calculate_rul(df, event_col='event')
