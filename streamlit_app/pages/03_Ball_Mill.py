@@ -1,62 +1,35 @@
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="Ball Mill Monitoring", layout="wide")
-# 🔄 Auto-refresh every 10 seconds (10000 ms)
-st_autorefresh(interval=10000, limit=None, key="ball_mill_autorefresh")
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=5000, key="ballmill_autorefresh")
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from pathlib import Path
-from utils.hf_loader import download_from_huggingface
-# Always resolve paths inside streamlit_app/
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data_output"
-BALL_MILL_DATA_DIR = DATA_DIR / "ball_mill"
-
-HF_BASE = "https://huggingface.co/spaces/smoulick/industrial-iot-data/resolve/main/data_output/ball_mill"
-
-# Local paths
-BALL_MILL_DATA_DIR = Path("data_output/ball_mill")
-GRINDCONTROL_PATH = BALL_MILL_DATA_DIR / "retsch_grindcontrol_data.csv"
-VIBRATION_PATH = BALL_MILL_DATA_DIR / "mill_shell_vibration_data.csv"
-ACOUSTIC_PATH = BALL_MILL_DATA_DIR / "mill_shell_acoustic_data.csv"
-MOTOR_ACCEL_PATH = BALL_MILL_DATA_DIR / "motor_accelerometer_data.csv"
-MOTOR_TEMP_PATH = BALL_MILL_DATA_DIR / "motor_temperature_data.csv"
-
-# Download files if missing
-download_from_huggingface(GRINDCONTROL_PATH, f"{HF_BASE}/retsch_grindcontrol_data.csv")
-download_from_huggingface(VIBRATION_PATH, f"{HF_BASE}/mill_shell_vibration_data.csv")
-download_from_huggingface(ACOUSTIC_PATH, f"{HF_BASE}/mill_shell_acoustic_data.csv")
-download_from_huggingface(MOTOR_ACCEL_PATH, f"{HF_BASE}/motor_accelerometer_data.csv")
-download_from_huggingface(MOTOR_TEMP_PATH, f"{HF_BASE}/motor_temperature_data.csv")
-
-# Load CSVs
-grind_df = pd.read_csv(GRINDCONTROL_PATH)
-vib_df = pd.read_csv(VIBRATION_PATH)
-acoustic_df = pd.read_csv(ACOUSTIC_PATH)
-motor_accel_df = pd.read_csv(MOTOR_ACCEL_PATH)
-motor_temp_df = pd.read_csv(MOTOR_TEMP_PATH)
 
 css_path = Path(__file__).parent.parent / "assets" / "styles.css"
 with open(css_path) as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+st.title("Ball/Rod Mill Monitoring")
+
+BALL_MILL_DATA_DIR = Path("data_output/ball_mill")
+GRINDCONTROL_PATH = BALL_MILL_DATA_DIR / "retsch_grindcontrol_data.csv"
+MILL_SHELL_PATH = BALL_MILL_DATA_DIR / "mill_shell_vibration_data.csv"
+MILL_SHELL_ACOUSTIC_PATH = BALL_MILL_DATA_DIR / "mill_shell_acoustic_data.csv"
+MOTOR_ACCEL_PATH = BALL_MILL_DATA_DIR / "motor_accelerometer_data.csv"
+MOTOR_TEMP_PATH = BALL_MILL_DATA_DIR / "motor_temperature_data.csv"
 
 component = st.selectbox(
     "Select Component",
     [
         "Grinding Jar",
         "Mill Shell",
-        "Motor",
-        "Feed System",
-        "Drive System"
+        "Motor"
     ]
 )
-
 def load_sensor_data(file_path):
     try:
         df = pd.read_csv(file_path)
@@ -172,9 +145,9 @@ if component == "Grinding Jar":
 
 # ------------------- Mill Shell (Vibration & Temperature) -------------------
 elif component == "Mill Shell":
-    if VIBRATION_PATH.exists():
-        df = load_sensor_data(VIBRATION_PATH)
-        st.write(f"Loaded {len(df)} rows from {VIBRATION_PATH}")
+    if MILL_SHELL_PATH.exists():
+        df = load_sensor_data(MILL_SHELL_PATH)
+        st.write(f"Loaded {len(df)} rows from {MILL_SHELL_PATH}")
 
         st.header("Mill Shell")
         st.subheader("Vibration & Temperature Sensor")
@@ -202,7 +175,7 @@ elif component == "Mill Shell":
                             "event": int((vibration_g > 7) or (temperature_c > 80))
                         })
                         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                        df.to_csv(VIBRATION_PATH, index=False)
+                        df.to_csv(MILL_SHELL_PATH, index=False)
                         st.success("Anomaly injected!")
                         st.rerun()
 
@@ -246,8 +219,8 @@ elif component == "Mill Shell":
         st.dataframe(styled, use_container_width=True)
 
     # ---- Mill Shell Acoustic Sensor ----
-    if ACOUSTIC_PATH.exists():
-        df_acoustic = load_sensor_data(ACOUSTIC_PATH)
+    if MILL_SHELL_ACOUSTIC_PATH.exists():
+        df_acoustic = load_sensor_data(MILL_SHELL_ACOUSTIC_PATH)
         st.subheader("Acoustic Sensor (Sound & Fill Level)")
 
         # Add event and RUL columns if not present
@@ -275,7 +248,7 @@ elif component == "Mill Shell":
                             "event": int((sound_db > 100) or (fill_level_pct > 110))
                         })
                         df_acoustic = pd.concat([df_acoustic, pd.DataFrame([new_row])], ignore_index=True)
-                        df_acoustic.to_csv(ACOUSTIC_PATH, index=False)
+                        df_acoustic.to_csv(MILL_SHELL_ACOUSTIC_PATH, index=False)
                         st.success("Anomaly injected!")
                         st.rerun()
 
@@ -322,7 +295,7 @@ elif component == "Mill Shell":
         styled_acoustic = df_acoustic.tail(30).style.apply(highlight_row_acoustic, axis=1)
         st.dataframe(styled_acoustic, use_container_width=True)
     else:
-        st.error(f"Data file not found: {ACOUSTIC_PATH}")
+        st.error(f"Data file not found: {MILL_SHELL_ACOUSTIC_PATH}")
 
 # ------------------- Motor (3-Axis Accelerometer) -------------------
 elif component == "Motor":
