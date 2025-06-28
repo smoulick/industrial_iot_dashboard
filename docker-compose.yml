@@ -1,0 +1,18 @@
+---
+services:
+  app:
+    image: ghcr.io/smoulick/research-project:latest
+    container_name: app
+    ports:
+      - "8501:8501"  # Main Dashboard
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 3600 --cleanup --stop-timeout 60s app
