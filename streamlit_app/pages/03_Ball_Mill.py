@@ -1,454 +1,227 @@
-import streamlit as st
-st.set_page_config(page_title="Ball Mill Monitoring", layout="wide")
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=5000, key="ballmill_autorefresh")
-import pandas as pd
-import plotly.express as px
-from datetime import datetime
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
+import threading
+import logging
 from pathlib import Path
+import sys
 
-css_path = Path(__file__).parent.parent / "assets" / "styles.css"
-with open(css_path) as f:
-    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+# Configure Python path
+PROJECT_ROOT = Path(__file__).parent
+sys.path.append(str(PROJECT_ROOT))
 
-st.title("Ball/Rod Mill Monitoring")
-
+# Data directories
+CONVEYOR_DATA_DIR = Path("data_output/conveyor_belt")
 BALL_MILL_DATA_DIR = Path("data_output/ball_mill")
-GRINDCONTROL_PATH = BALL_MILL_DATA_DIR / "retsch_grindcontrol_data.csv"
-MILL_SHELL_PATH = BALL_MILL_DATA_DIR / "mill_shell_vibration_data.csv"
-MILL_SHELL_ACOUSTIC_PATH = BALL_MILL_DATA_DIR / "mill_shell_acoustic_data.csv"
-MOTOR_ACCEL_PATH = BALL_MILL_DATA_DIR / "motor_accelerometer_data.csv"
-MOTOR_TEMP_PATH = BALL_MILL_DATA_DIR / "motor_temperature_data.csv"
 
-component = st.selectbox(
-    "Select Component",
-    [
-        "Grinding Jar",
-        "Mill Shell",
-        "Motor"
-    ]
+# Import sensor generators
+from data_generators.conveyor_belt.inductive_sensor import generate_realistic_inductive_data
+from data_generators.conveyor_belt.ultrasonic_sensor import generate_realistic_ultrasonic_data
+from data_generators.conveyor_belt.heat_sensor import generate_realistic_heat_data
+from data_generators.conveyor_belt.idler_roller.smart_idler_sensor import SmartIdlerSimulator
+from data_generators.conveyor_belt.pulley.incremental_encoder import IncrementalEncoderSimulator
+from data_generators.conveyor_belt.touchswitch_conveyor import generate_touchswitch_conveyor_data
+from data_generators.conveyor_belt.pulley.touchswitch_pulley import generate_touchswitch_pulley_data
+from data_generators.conveyor_belt.impact_bed.impact_bed_accelerometer import generate_impact_bed_accelerometer_data
+from data_generators.conveyor_belt.impact_bed.impact_bed_load_cell import generate_load_cell_data
+
+from data_generators.ball_mill.grinding_jar.retsch_grindcontrol import generate_retsch_grindcontrol_data_stream
+from data_generators.ball_mill.mill_shell.mill_shell_vibration import generate_mill_shell_vibration_data_stream
+from data_generators.ball_mill.mill_shell.mill_shell_acoustic import generate_mill_shell_acoustic_data_stream
+from data_generators.ball_mill.motor.motor_accelerometer import generate_motor_accelerometer_data_stream
+from data_generators.ball_mill.motor.motor_temperature import generate_motor_temperature_data_stream
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
-def load_sensor_data(file_path):
+logger = logging.getLogger(__name__)
+
+class MainDataGenerator:
+    def __init__(self):
+        # Ensure output directories exist
+        CONVEYOR_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        BALL_MILL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.running = False
+        self.threads = []
+
+        self.sensor_configs = {
+            # Conveyor Belt Sensors
+            "inductive": {
+                "function": generate_realistic_inductive_data,
+                "default_file": "inductive_NBN40-CB1-PRESENCE_data.csv",
+                "description": "NBN40-U1-E2-V1 Inductive Proximity Sensor",
+                "base_path": CONVEYOR_DATA_DIR
+            },
+            "ultrasonic": {
+                "function": generate_realistic_ultrasonic_data,
+                "default_file": "ultrasonic_UB800-CB1-MAIN_data.csv",
+                "description": "UB800-18GM40-E5-V1 Ultrasonic Distance Sensor",
+                "base_path": CONVEYOR_DATA_DIR
+            },
+            "heat": {
+                "function": generate_realistic_heat_data,
+                "default_file": "heat_PATOL5450-CB1-HOTSPOT_data.csv",
+                "description": "PATOL5450 Heat Detection Sensor",
+                "base_path": CONVEYOR_DATA_DIR
+            },
+            "smart_idler": {
+                "function": SmartIdlerSimulator().generate_data,
+                "default_file": "smart_idler_data.csv",
+                "description": "Vayeron Smart-Idler Integrated Sensor",
+                "base_path": CONVEYOR_DATA_DIR
+            },
+            "incremental_encoder": {
+                "function": IncrementalEncoderSimulator().generate_data,
+                "default_file": "incremental_encoder_data.csv",
+                "description": "Hubner HOG 10 Incremental Encoder",
+                "base_path": CONVEYOR_DATA_DIR
+            },
+            "touchswitch_conveyor": {
+                "function": generate_touchswitch_conveyor_data,
+                "default_file": "touchswitch_conveyor.csv",
+                "description": "4B Touchswitch TS2V4AI Conveyor Belt Alignment Sensor",
+                "base_path": CONVEYOR_DATA_DIR
+            },
+            "touchswitch_pulley": {
+                "function": generate_touchswitch_pulley_data,
+                "description": "4B Touchswitch TS2V4AI Pulley Alignment Sensor",
+                "base_path": CONVEYOR_DATA_DIR
+                # No default_file, no arguments needed!
+            },
+            "impact_bed_accelerometer": {
+                "function": generate_impact_bed_accelerometer_data,
+                "default_file": "impact_bed_accelerometer.csv",
+                "description": "Impact Bed Accelerometer",
+                "base_path": CONVEYOR_DATA_DIR
+            },
+            "impact_bed_load_cell": {
+                "function": generate_load_cell_data,
+                "default_file": "impact_bed_load_cell.csv",
+                "description": "Impact Bed Load Cell",
+                "base_path": CONVEYOR_DATA_DIR
+            },
+            # Ball Mill Sensors
+            "retsch_grindcontrol": {
+                "function": generate_retsch_grindcontrol_data_stream,
+                "default_file": "retsch_grindcontrol_data.csv",
+                "description": "Retsch GrindControl Ball/Rod Mill Pressure & Temperature",
+                "base_path": BALL_MILL_DATA_DIR
+            },
+            "mill_shell_vibration": {
+                "function": generate_mill_shell_vibration_data_stream,
+                "default_file": "mill_shell_vibration_data.csv",
+                "description": "Mill Shell Vibration & Temperature Sensor",
+                "base_path": BALL_MILL_DATA_DIR
+            },
+            "mill_shell_acoustic": {
+                "function": generate_mill_shell_acoustic_data_stream,
+                "default_file": "mill_shell_acoustic_data.csv",
+                "description": "Mill Shell Acoustic (Sound) & Fill Level Sensor",
+                "base_path": BALL_MILL_DATA_DIR
+            },
+                "motor_accelerometer": {
+                    "function": generate_motor_accelerometer_data_stream,
+                    "default_file": "motor_accelerometer_data.csv",
+                    "description": "Motor Accelerometer (3-axis)",
+                    "base_path": BALL_MILL_DATA_DIR
+            },
+            "motor_temperature": {
+                "function": generate_motor_temperature_data_stream,
+                "default_file": "motor_temperature_data.csv",
+                "description": "Motor Temperature Sensor",
+                "base_path": BALL_MILL_DATA_DIR
+            }
+        }
+
+    def run_all_sensors(self, duration_seconds=None):
+        logger.info("=" * 80)
+        logger.info("STARTING INDUSTRIAL IOT SENSOR SIMULATION")
+        logger.info(f"Output Directories: {CONVEYOR_DATA_DIR}, {BALL_MILL_DATA_DIR}")
+        logger.info("=" * 80)
+
+        self.running = True
+        self.threads = []
+
+        for sensor_type, config in self.sensor_configs.items():
+            sensor_kwargs = {}
+
+            base_path = config.get("base_path", CONVEYOR_DATA_DIR)
+            if "default_file" in config:
+                output_path = base_path / config["default_file"]
+
+            # Set arguments as required by each sensor function
+            if sensor_type in ["smart_idler", "incremental_encoder"]:
+                sensor_kwargs["output_path"] = output_path
+                if duration_seconds is not None and sensor_type == "smart_idler":
+                    sensor_kwargs["duration_hours"] = duration_seconds / 3600
+
+            elif sensor_type in ["inductive", "ultrasonic", "heat"]:
+                sensor_kwargs["output_file_path"] = output_path
+                if duration_seconds is not None:
+                    sensor_kwargs["run_duration_seconds"] = duration_seconds
+
+            elif sensor_type == "touchswitch_conveyor":
+                sensor_kwargs["output_path"] = output_path
+                if duration_seconds is not None:
+                    sensor_kwargs["run_duration_seconds"] = duration_seconds
+
+
+            elif sensor_type in ["retsch_grindcontrol", "mill_shell_vibration", "mill_shell_acoustic", "motor_accelerometer", "motor_temperature"]:
+                sensor_kwargs["output_path"] = output_path
+                if duration_seconds is not None:
+                    sensor_kwargs["run_duration_seconds"] = duration_seconds
+
+            # For touchswitch_pulley: no arguments needed!
+
+            thread = threading.Thread(
+                target=config["function"],
+                kwargs=sensor_kwargs,
+                name=f"{sensor_type}_thread",
+                daemon=True
+            )
+
+            self.threads.append(thread)
+            thread.start()
+            logger.info(f"🚀 Started {config['description']} (Output: {output_path if 'default_file' in config else 'N/A'})")
+
+        try:
+            for thread in self.threads:
+                thread.join()
+
+            logger.info("=" * 80)
+            logger.info("✅ ALL SENSORS COMPLETED SUCCESSFULLY!")
+            logger.info("📁 Generated files:")
+            for sensor_type, config in self.sensor_configs.items():
+                if "default_file" in config:
+                    base_path = config.get("base_path", CONVEYOR_DATA_DIR)
+                    file_path = base_path / config["default_file"]
+                    logger.info(f"   - {file_path}")
+            logger.info("=" * 80)
+
+        except KeyboardInterrupt:
+            logger.info("🛑 Simulation interrupted by user")
+            self.stop_all_sensors()
+
+        self.running = False
+
+    def stop_all_sensors(self):
+        logger.info("🛑 Stopping all sensor simulations...")
+        self.running = False
+        for thread in self.threads:
+            thread.join(timeout=5)
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Industrial IoT Sensor Data Generator")
+    parser.add_argument("--duration", type=int, help="Run duration in seconds")
+    args = parser.parse_args()
+
+    generator = MainDataGenerator()
     try:
-        df = pd.read_csv(file_path)
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-            df = df.sort_values('timestamp', ascending=False)
-        return df
+        generator.run_all_sensors(duration_seconds=args.duration)
+    except KeyboardInterrupt:
+        logger.info("🛑 Stopped by user")
     except Exception as e:
-        st.error(f"[load_sensor_data Error] {e}")
-        return pd.DataFrame()
+        logger.error(f"❌ Critical error: {e}")
+        sys.exit(1)
 
-def live_anomaly_detection(data, feature_cols):
-    if len(data) < 20:
-        return None, None
-    features = data[feature_cols].fillna(method='ffill')
-    scaler = StandardScaler().fit(features)
-    model = IsolationForest(contamination=0.05, random_state=42).fit(scaler.transform(features))
-    scores = model.decision_function(scaler.transform(features))
-    anomalies = model.predict(scaler.transform(features))
-    return scores, anomalies
-
-def calculate_rul(df, event_col='event'):
-    """Calculate Remaining Useful Life (RUL) for each row based on the event column."""
-    rul = []
-    event_indices = df.index[df[event_col] == 1].tolist()
-    n = len(df)
-    for i in range(n):
-        # Find the next event after this row
-        future_events = [idx for idx in event_indices if idx >= i]
-        if future_events:
-            next_event = future_events[0]
-            rul.append(next_event - i)
-        else:
-            rul.append(n - i - 1)
-    return rul
-
-# ------------------- Grinding Jar -------------------
-if component == "Grinding Jar":
-    if GRINDCONTROL_PATH.exists():
-        df = load_sensor_data(GRINDCONTROL_PATH)
-        st.write(f"Loaded {len(df)} rows from {GRINDCONTROL_PATH}")
-
-        st.header("Grinding Jar")
-        st.subheader("Retsch GrindControl (Temperature & Pressure)")
-
-        # Fault Injection
-        with st.expander("Inject Anomaly (Grinding Jar - Retsch GrindControl)"):
-            with st.form("inject_anomaly_grinding_jar"):
-                temperature_c = st.number_input("Temperature (°C) [abnormal: >80]", min_value=-25.0, max_value=120.0, value=30.0)
-                pressure_bar = st.number_input("Pressure (bar) [abnormal: >4.5]", min_value=0.0, max_value=6.0, value=1.0)
-                event = st.selectbox("Event (0=Normal, 1=Fault) [abnormal: 1]", [0, 1])
-                submit = st.form_submit_button("Inject")
-                if submit:
-                    if df.empty:
-                        st.warning("Cannot inject fault: no existing data.")
-                    else:
-                        new_row = df.iloc[-1].to_dict()
-                        new_row.update({
-                            "timestamp": datetime.now().isoformat(),
-                            "temperature_c": temperature_c,
-                            "pressure_bar": pressure_bar,
-                            "event": event
-                        })
-                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                        df.to_csv(GRINDCONTROL_PATH, index=False)
-                        st.success("Anomaly injected!")
-                        st.rerun()
-
-        # Show latest values
-        latest = df.iloc[-1]
-        st.metric("Temperature (°C)", f"{latest['temperature_c']:.2f}")
-        st.metric("Pressure (bar)", f"{latest['pressure_bar']:.3f}")
-
-        # Plot time series
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Temperature Trend")
-            fig1 = px.line(df, x="timestamp", y="temperature_c", title="Temperature (°C) Over Time")
-            st.plotly_chart(fig1, use_container_width=True)
-        with col2:
-            st.subheader("Pressure Trend")
-            fig2 = px.line(df, x="timestamp", y="pressure_bar", title="Pressure (bar) Over Time")
-            st.plotly_chart(fig2, use_container_width=True)
-
-        # ML Insights (Anomaly + RUL)
-        with st.expander("ML Insights (Anomaly & RUL)", expanded=True):
-            feature_cols = ['temperature_c', 'pressure_bar']
-            scores, anomalies = live_anomaly_detection(df, feature_cols)
-            if scores is not None:
-                df['anomaly_score'] = scores
-                df['is_anomaly'] = anomalies
-                st.metric("Anomaly", "🚨" if df.iloc[-1]['is_anomaly'] == -1 else "✅")
-                st.line_chart(df.set_index('timestamp')['anomaly_score'].tail(100))
-            else:
-                st.info("Need 20+ rows for ML.")
-
-            # RUL (already present in data)
-            if 'event' in df.columns:
-                df['rul'] = calculate_rul(df, event_col='event')
-                st.metric("RUL (rows)", f"{df.iloc[-1]['rul']}")
-                st.line_chart(df.set_index('timestamp')['rul'].tail(100))
-
-        # Highlight anomalies
-        df['threshold_anomaly'] = (df['temperature_c'] > 80) | (df['pressure_bar'] > 4.5)
-        st.write("### Recent Data")
-        def highlight_row(row):
-            color = 'background-color: #ffcccc' if row['threshold_anomaly'] else ''
-            return [color] * len(row)
-        styled = df.tail(30).style.apply(highlight_row, axis=1)
-        st.dataframe(styled, use_container_width=True)
-    else:
-        st.error(f"Data file not found: {GRINDCONTROL_PATH}")
-
-# ------------------- Mill Shell (Vibration & Temperature) -------------------
-elif component == "Mill Shell":
-    if MILL_SHELL_PATH.exists():
-        df = load_sensor_data(MILL_SHELL_PATH)
-        st.write(f"Loaded {len(df)} rows from {MILL_SHELL_PATH}")
-
-        st.header("Mill Shell")
-        st.subheader("Vibration & Temperature Sensor")
-
-        # Add event column if not present
-        if 'event' not in df.columns:
-            df['event'] = ((df['vibration_g'] > 7) | (df['temperature_c'] > 80)).astype(int)
-        df['rul'] = calculate_rul(df, event_col='event')
-
-        # Fault Injection
-        with st.expander("Inject Anomaly (Mill Shell Vibration)"):
-            with st.form("inject_anomaly_mill_shell"):
-                vibration_g = st.number_input("Vibration (g) [abnormal: >7]", min_value=0.0, max_value=15.0, value=2.0)
-                temperature_c = st.number_input("Temperature (°C) [abnormal: >80]", min_value=20.0, max_value=120.0, value=30.0)
-                submit = st.form_submit_button("Inject")
-                if submit:
-                    if df.empty:
-                        st.warning("Cannot inject fault: no existing data.")
-                    else:
-                        new_row = df.iloc[-1].to_dict()
-                        new_row.update({
-                            "timestamp": datetime.now().isoformat(),
-                            "vibration_g": vibration_g,
-                            "temperature_c": temperature_c,
-                            "event": int((vibration_g > 7) or (temperature_c > 80))
-                        })
-                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                        df.to_csv(MILL_SHELL_PATH, index=False)
-                        st.success("Anomaly injected!")
-                        st.rerun()
-
-        # Show latest values
-        latest = df.iloc[-1]
-        st.metric("Vibration (g)", f"{latest['vibration_g']:.3f}")
-        st.metric("Temperature (°C)", f"{latest['temperature_c']:.2f}")
-        st.metric("RUL (rows)", f"{latest['rul']}")
-
-        # Plot time series
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Vibration Trend")
-            fig1 = px.line(df, x="timestamp", y="vibration_g", title="Vibration (g) Over Time")
-            st.plotly_chart(fig1, use_container_width=True)
-        with col2:
-            st.subheader("Temperature Trend")
-            fig2 = px.line(df, x="timestamp", y="temperature_c", title="Temperature (°C) Over Time")
-            st.plotly_chart(fig2, use_container_width=True)
-
-        # ML Insights (Anomaly Detection & RUL)
-        with st.expander("ML Insights (Anomaly Detection & RUL)", expanded=True):
-            feature_cols = ['vibration_g', 'temperature_c']
-            scores, anomalies = live_anomaly_detection(df, feature_cols)
-            if scores is not None:
-                df['anomaly_score'] = scores
-                df['is_anomaly'] = anomalies
-                st.metric("Anomaly", "🚨" if df.iloc[-1]['is_anomaly'] == -1 else "✅")
-                st.line_chart(df.set_index('timestamp')['anomaly_score'].tail(100))
-                st.line_chart(df.set_index('timestamp')['rul'].tail(100))
-            else:
-                st.info("Need 20+ rows for ML.")
-
-        # Highlight anomalies
-        df['threshold_anomaly'] = (df['vibration_g'] > 7) | (df['temperature_c'] > 80)
-        st.write("### Recent Data")
-        def highlight_row(row):
-            color = 'background-color: #ffcccc' if row['threshold_anomaly'] else ''
-            return [color] * len(row)
-        styled = df.tail(30).style.apply(highlight_row, axis=1)
-        st.dataframe(styled, use_container_width=True)
-
-    # ---- Mill Shell Acoustic Sensor ----
-    if MILL_SHELL_ACOUSTIC_PATH.exists():
-        df_acoustic = load_sensor_data(MILL_SHELL_ACOUSTIC_PATH)
-        st.subheader("Acoustic Sensor (Sound & Fill Level)")
-
-        # Add event and RUL columns if not present
-        if 'event' not in df_acoustic.columns:
-            df_acoustic['event'] = ((df_acoustic['sound_db'] > 100) | (df_acoustic['fill_level_pct'] > 110)).astype(int)
-        df_acoustic['rul'] = calculate_rul(df_acoustic, event_col='event')
-
-        # Fault Injection
-        with st.expander("Inject Anomaly (Mill Shell Acoustic)"):
-            with st.form("inject_anomaly_mill_shell_acoustic"):
-                sound_db = st.number_input("Sound Level (dB) [abnormal: >100]", min_value=50.0, max_value=130.0,
-                                           value=70.0)
-                fill_level_pct = st.number_input("Fill Level (%) [abnormal: >110]", min_value=0.0, max_value=130.0,
-                                                 value=60.0)
-                submit = st.form_submit_button("Inject")
-                if submit:
-                    if df_acoustic.empty:
-                        st.warning("Cannot inject fault: no existing data.")
-                    else:
-                        new_row = df_acoustic.iloc[-1].to_dict()
-                        new_row.update({
-                            "timestamp": datetime.now().isoformat(),
-                            "sound_db": sound_db,
-                            "fill_level_pct": fill_level_pct,
-                            "event": int((sound_db > 100) or (fill_level_pct > 110))
-                        })
-                        df_acoustic = pd.concat([df_acoustic, pd.DataFrame([new_row])], ignore_index=True)
-                        df_acoustic.to_csv(MILL_SHELL_ACOUSTIC_PATH, index=False)
-                        st.success("Anomaly injected!")
-                        st.rerun()
-
-        # Show latest values
-        latest = df_acoustic.iloc[-1]
-        st.metric("Sound Level (dB)", f"{latest['sound_db']:.2f}")
-        st.metric("Fill Level (%)", f"{latest['fill_level_pct']:.1f}")
-        st.metric("RUL (rows)", f"{latest['rul']}")
-
-        # Plot time series
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Sound Level Trend")
-            fig1 = px.line(df_acoustic, x="timestamp", y="sound_db", title="Sound Level (dB) Over Time")
-            st.plotly_chart(fig1, use_container_width=True)
-        with col2:
-            st.subheader("Fill Level Trend")
-            fig2 = px.line(df_acoustic, x="timestamp", y="fill_level_pct", title="Fill Level (%) Over Time")
-            st.plotly_chart(fig2, use_container_width=True)
-
-        # ML Insights (Anomaly Detection & RUL)
-        with st.expander("ML Insights (Anomaly Detection & RUL)", expanded=True):
-            feature_cols = ['sound_db', 'fill_level_pct']
-            scores, anomalies = live_anomaly_detection(df_acoustic, feature_cols)
-            if scores is not None:
-                df_acoustic['anomaly_score'] = scores
-                df_acoustic['is_anomaly'] = anomalies
-                st.metric("Anomaly", "🚨" if df_acoustic.iloc[-1]['is_anomaly'] == -1 else "✅")
-                st.line_chart(df_acoustic.set_index('timestamp')['anomaly_score'].tail(100))
-                st.line_chart(df_acoustic.set_index('timestamp')['rul'].tail(100))
-            else:
-                st.info("Need 20+ rows for ML.")
-
-        # Highlight anomalies
-        df_acoustic['threshold_anomaly'] = (df_acoustic['sound_db'] > 100) | (df_acoustic['fill_level_pct'] > 110)
-        st.write("### Recent Data")
-
-
-        def highlight_row_acoustic(row):
-            color = 'background-color: #ffcccc' if row['threshold_anomaly'] else ''
-            return [color] * len(row)
-
-
-        styled_acoustic = df_acoustic.tail(30).style.apply(highlight_row_acoustic, axis=1)
-        st.dataframe(styled_acoustic, use_container_width=True)
-    else:
-        st.error(f"Data file not found: {MILL_SHELL_ACOUSTIC_PATH}")
-
-# ------------------- Motor (3-Axis Accelerometer) -------------------
-elif component == "Motor":
-    if MOTOR_ACCEL_PATH.exists():
-        df = load_sensor_data(MOTOR_ACCEL_PATH)
-        st.write(f"Loaded {len(df)} rows from {MOTOR_ACCEL_PATH}")
-
-        st.header("Motor")
-        st.subheader("3-Axis Accelerometer Sensor")
-
-        # Add event column if not present
-        if 'event' not in df.columns:
-            df['event'] = ((df['accel_x_g'].abs() > 7) | (df['accel_y_g'].abs() > 7) | (df['accel_z_g'].abs() > 7)).astype(int)
-        df['rul'] = calculate_rul(df, event_col='event')
-
-        # Fault Injection
-        with st.expander("Inject Anomaly (Motor Accelerometer)"):
-            with st.form("inject_anomaly_motor_accel"):
-                accel_x = st.number_input("Acceleration X (g) [abnormal: >7 or < -7]", min_value=-15.0, max_value=15.0, value=0.0)
-                accel_y = st.number_input("Acceleration Y (g) [abnormal: >7 or < -7]", min_value=-15.0, max_value=15.0, value=0.0)
-                accel_z = st.number_input("Acceleration Z (g) [abnormal: >7 or < -7]", min_value=-15.0, max_value=15.0, value=0.0)
-                submit = st.form_submit_button("Inject")
-                if submit:
-                    if df.empty:
-                        st.warning("Cannot inject fault: no existing data.")
-                    else:
-                        new_row = df.iloc[-1].to_dict()
-                        new_row.update({
-                            "timestamp": datetime.now().isoformat(),
-                            "accel_x_g": accel_x,
-                            "accel_y_g": accel_y,
-                            "accel_z_g": accel_z,
-                            "event": int((abs(accel_x) > 7) or (abs(accel_y) > 7) or (abs(accel_z) > 7))
-                        })
-                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                        df.to_csv(MOTOR_ACCEL_PATH, index=False)
-                        st.success("Anomaly injected!")
-                        st.rerun()
-
-        # Show latest values
-        latest = df.iloc[-1]
-        st.metric("Acceleration X (g)", f"{latest['accel_x_g']:.4f}")
-        st.metric("Acceleration Y (g)", f"{latest['accel_y_g']:.4f}")
-        st.metric("Acceleration Z (g)", f"{latest['accel_z_g']:.4f}")
-        st.metric("RUL (rows)", f"{latest['rul']}")
-
-        # Plot time series
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.subheader("Acceleration X Trend")
-            fig1 = px.line(df, x="timestamp", y="accel_x_g", title="Acceleration X (g) Over Time")
-            st.plotly_chart(fig1, use_container_width=True)
-        with col2:
-            st.subheader("Acceleration Y Trend")
-            fig2 = px.line(df, x="timestamp", y="accel_y_g", title="Acceleration Y (g) Over Time")
-            st.plotly_chart(fig2, use_container_width=True)
-        with col3:
-            st.subheader("Acceleration Z Trend")
-            fig3 = px.line(df, x="timestamp", y="accel_z_g", title="Acceleration Z (g) Over Time")
-            st.plotly_chart(fig3, use_container_width=True)
-
-        # ML Insights (Anomaly Detection & RUL)
-        with st.expander("ML Insights (Anomaly Detection & RUL)", expanded=True):
-            feature_cols = ['accel_x_g', 'accel_y_g', 'accel_z_g']
-            scores, anomalies = live_anomaly_detection(df, feature_cols)
-            if scores is not None:
-                df['anomaly_score'] = scores
-                df['is_anomaly'] = anomalies
-                st.metric("Anomaly", "🚨" if df.iloc[-1]['is_anomaly'] == -1 else "✅")
-                st.line_chart(df.set_index('timestamp')['anomaly_score'].tail(100))
-                st.line_chart(df.set_index('timestamp')['rul'].tail(100))
-            else:
-                st.info("Need 20+ rows for ML.")
-
-        # Highlight anomalies
-        df['threshold_anomaly'] = (df['accel_x_g'].abs() > 7) | (df['accel_y_g'].abs() > 7) | (df['accel_z_g'].abs() > 7)
-        st.write("### Recent Data")
-        def highlight_row(row):
-            color = 'background-color: #ffcccc' if row['threshold_anomaly'] else ''
-            return [color] * len(row)
-        styled = df.tail(30).style.apply(highlight_row, axis=1)
-        st.dataframe(styled, use_container_width=True)
-    else:
-        st.error(f"Data file not found: {MOTOR_ACCEL_PATH}")
-
-        # ---- Motor Temperature Sensor ----
-    if MOTOR_TEMP_PATH.exists():
-            df_temp = load_sensor_data(MOTOR_TEMP_PATH)
-            st.subheader("Motor Temperature Sensor")
-
-            # Add event and RUL columns if not present
-            if 'event' not in df_temp.columns:
-                df_temp['event'] = (df_temp['temperature_c'] > 110).astype(int)  # Example threshold
-            df_temp['rul'] = calculate_rul(df_temp, event_col='event')
-
-            # Fault Injection
-            with st.expander("Inject Anomaly (Motor Temperature)"):
-                with st.form("inject_anomaly_motor_temp"):
-                    temperature_c = st.number_input("Temperature (°C) [abnormal: >110]", min_value=-40.0,
-                                                    max_value=200.0, value=40.0)
-                    submit = st.form_submit_button("Inject")
-                    if submit:
-                        if df_temp.empty:
-                            st.warning("Cannot inject fault: no existing data.")
-                        else:
-                            new_row = df_temp.iloc[-1].to_dict()
-                            new_row.update({
-                                "timestamp": datetime.now().isoformat(),
-                                "temperature_c": temperature_c,
-                                "event": int(temperature_c > 110)
-                            })
-                            df_temp = pd.concat([df_temp, pd.DataFrame([new_row])], ignore_index=True)
-                            df_temp.to_csv(MOTOR_TEMP_PATH, index=False)
-                            st.success("Anomaly injected!")
-                            st.rerun()
-
-            # Show latest values
-            latest = df_temp.iloc[-1]
-            st.metric("Temperature (°C)", f"{latest['temperature_c']:.2f}")
-            st.metric("RUL (rows)", f"{latest['rul']}")
-
-            # Plot time series
-            st.subheader("Temperature Trend")
-            fig = px.line(df_temp, x="timestamp", y="temperature_c", title="Motor Temperature (°C) Over Time")
-            st.plotly_chart(fig, use_container_width=True)
-
-            # ML Insights (Anomaly Detection & RUL)
-            with st.expander("ML Insights (Anomaly Detection & RUL)", expanded=True):
-                feature_cols = ['temperature_c']
-                scores, anomalies = live_anomaly_detection(df_temp, feature_cols)
-                if scores is not None:
-                    df_temp['anomaly_score'] = scores
-                    df_temp['is_anomaly'] = anomalies
-                    st.metric("Anomaly", "🚨" if df_temp.iloc[-1]['is_anomaly'] == -1 else "✅")
-                    st.line_chart(df_temp.set_index('timestamp')['anomaly_score'].tail(100))
-                    st.line_chart(df_temp.set_index('timestamp')['rul'].tail(100))
-                else:
-                    st.info("Need 20+ rows for ML.")
-
-            # Highlight anomalies
-            df_temp['threshold_anomaly'] = (df_temp['temperature_c'] > 110)
-            st.write("### Recent Data")
-
-
-            def highlight_row_temp(row):
-                color = 'background-color: #ffcccc' if row['threshold_anomaly'] else ''
-                return [color] * len(row)
-
-
-            styled_temp = df_temp.tail(30).style.apply(highlight_row_temp, axis=1)
-            st.dataframe(styled_temp, use_container_width=True)
-    else:
-         st.error(f"Data file not found: {MOTOR_TEMP_PATH}")
-
-else:
-    st.info("Component not implemented yet. Please select 'Grinding Jar', 'Mill Shell', or 'Motor'.")
+if __name__ == "__main__":
+    main()
