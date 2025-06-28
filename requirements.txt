@@ -42,3 +42,4 @@ openpyxl
 matplotlib
 seaborn
 scikit-learn
+requests
