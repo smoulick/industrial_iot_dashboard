@@ -2,16 +2,16 @@
 services:
   app:
     image: ghcr.io/smoulick/research-project:latest
-    container_name: app
+    container_name: smoulick 
     ports:
-      - "8501:8501"  # Main Dashboard
+      - "8000:8501"  # Main Dashboard
     restart: unless-stopped
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
   watchtower:
     image: containrrr/watchtower:latest
-    container_name: watchtower
+    container_name: watchdog
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
