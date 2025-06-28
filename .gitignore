@@ -23,3 +23,7 @@ data_output/**/*.log
 # OS specific
 .DS_Store
 Thumbs.db 
+
+.env
+*.log
+*.csv
