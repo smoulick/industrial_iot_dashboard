@@ -29,7 +29,7 @@ SMART_IDLER_PATH = CONVEYOR_DATA_DIR / "smart_idler_data.csv"
 
 # Pulley
 TOUCHSWITCH_PULLEY_PATH = CONVEYOR_DATA_DIR / "touchswitch_pulley.csv"
-PULLEY_ENCODER_PATH = CONVEYOR_DATA_DIR / "pulley_incremental_encoder.csv"
+PULLEY_ENCODER_PATH = CONVEYOR_DATA_DIR / "incremental_encoder_data.csv"
 
 # Impact Bed
 IMPACT_LOADCELL_PATH = CONVEYOR_DATA_DIR / "impact_bed_load_cell.csv"
@@ -581,80 +581,202 @@ elif component == "Impact Bed":
         )
         st.dataframe(styled, use_container_width=True)
 
+
+
     elif impact_sensor == "Accelerometer":
+
         path = CONVEYOR_DATA_DIR / "impact_bed_accelerometer.csv"
+
         if path.exists():
+
             df = load_sensor_data(path)
+            # ✅ Column check
+
+            expected_cols = [
+
+                "timestamp", "sensor_id", "accel_x_g", "vibration_rms_g",
+
+                "impact_peak_g", "impact_event", "overrange", "alerts"
+
+            ]
+
+            missing_cols = [col for col in expected_cols if col not in df.columns]
+
+            if missing_cols:
+                st.error(f"❌ Missing expected columns: {missing_cols}")
+
+                st.stop()
+
             st.subheader("🟣 Impact Bed – Accelerometer (ADXL1001)")
+
             st.success("🟣 Accelerometer block is loading")
-            st.write(df.tail())
-            # Add event + RUL
-            df['event'] = df['impact_event']
-            df['rul'] = calculate_rul(df, event_col='event')
 
-            # Fault injection
+            # ✅ Safe event + RUL handling
+
+            try:
+
+                df['event'] = df['impact_event']
+
+                df['rul'] = calculate_rul(df, event_col='event')
+
+            except Exception as e:
+
+                st.error(f"❌ Error computing event or RUL: {e}")
+
+                st.stop()
+
+            # ✅ Fault Injection
+
             with st.expander("Inject Anomaly"):
+
                 with st.form("inject_impact_accel"):
+
                     accel_x = st.number_input("Accel X (g)", value=2.0)
+
                     vib_rms = st.number_input("Vibration RMS (g)", value=3.0)
+
                     impact_peak = st.number_input("Impact Peak (g)", value=50.0)
+
                     impact_event = st.selectbox("Impact Event", [0, 1])
+
                     overrange = st.selectbox("Overrange", [0, 1])
+
                     alerts = st.text_input("Alerts", value="IMPACT DETECTED")
+
                     submit = st.form_submit_button("Inject")
+
                     if submit:
-                        new_row = df.iloc[-1].copy()
-                        new_row.update({
-                            "timestamp": datetime.now().isoformat(),
-                            "accel_x_g": accel_x,
-                            "vibration_rms_g": vib_rms,
-                            "impact_peak_g": impact_peak,
-                            "impact_event": impact_event,
-                            "overrange": overrange,
-                            "alerts": alerts,
-                            "event": impact_event
-                        })
-                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                        df.to_csv(path, index=False)
-                        st.success("Anomaly injected.")
-                        st.rerun()
 
-            # Latest metrics
-            latest = df.iloc[-1]
-            st.metric("Accel X (g)", f"{latest['accel_x_g']:.2f}")
-            st.metric("Vibration RMS (g)", f"{latest['vibration_rms_g']:.2f}")
-            st.metric("Impact Peak (g)", f"{latest['impact_peak_g']:.2f}")
-            st.metric("RUL (rows)", f"{latest['rul']}")
+                        try:
 
-            # Charts
+                            new_row = df.iloc[-1].copy()
+
+                            new_row.update({
+
+                                "timestamp": datetime.now().isoformat(),
+
+                                "accel_x_g": accel_x,
+
+                                "vibration_rms_g": vib_rms,
+
+                                "impact_peak_g": impact_peak,
+
+                                "impact_event": impact_event,
+
+                                "overrange": overrange,
+
+                                "alerts": alerts,
+
+                                "event": impact_event
+
+                            })
+
+                            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+                            df.to_csv(path, index=False)
+
+                            st.success("Anomaly injected.")
+
+                            st.rerun()
+
+                        except Exception as e:
+
+                            st.error(f"❌ Error injecting anomaly: {e}")
+
+                            st.stop()
+
+            # ✅ Latest metrics
+
+            try:
+
+                latest = df.iloc[-1]
+
+                st.metric("Accel X (g)", f"{latest['accel_x_g']:.2f}")
+
+                st.metric("Vibration RMS (g)", f"{latest['vibration_rms_g']:.2f}")
+
+                st.metric("Impact Peak (g)", f"{latest['impact_peak_g']:.2f}")
+
+                st.metric("RUL (rows)", f"{latest['rul']}")
+
+            except Exception as e:
+
+                st.error(f"❌ Metric display failed: {e}")
+
+            # ✅ Charts
+
             col1, col2 = st.columns(2)
+
             with col1:
-                fig1 = px.line(df, x="timestamp", y="accel_x_g", title="Accel X (g) Over Time")
-                st.plotly_chart(fig1, use_container_width=True)
+
+                try:
+
+                    fig1 = px.line(df.set_index("timestamp").tail(1000).reset_index(), x="timestamp", y="accel_x_g",
+                                   title="Accel X (g) Over Time")
+
+                    st.plotly_chart(fig1, use_container_width=True)
+
+                except Exception as e:
+
+                    st.error(f"❌ Chart 1 failed: {e}")
+
             with col2:
-                fig2 = px.line(df, x="timestamp", y="vibration_rms_g", title="Vibration RMS Over Time")
-                st.plotly_chart(fig2, use_container_width=True)
 
-            # ML Insights
+                try:
+
+                    fig2 = px.line(df.set_index("timestamp").tail(1000).reset_index(), x="timestamp",
+                                   y="vibration_rms_g", title="Vibration RMS Over Time")
+
+                    st.plotly_chart(fig2, use_container_width=True)
+
+                except Exception as e:
+
+                    st.error(f"❌ Chart 2 failed: {e}")
+
+            # ✅ ML Insights
+
             with st.expander("ML Insights"):
-                features = ["accel_x_g", "vibration_rms_g"]
-                scores, anomalies = live_anomaly_detection(df, features)
-                if scores is not None:
-                    df["anomaly_score"] = scores
-                    df["is_anomaly"] = anomalies
-                    st.metric("Anomaly", "🚨" if df.iloc[-1]["is_anomaly"] == -1 else "✅")
-                    st.line_chart(df.set_index("timestamp")["anomaly_score"].tail(100))
-                    st.line_chart(df.set_index("timestamp")["rul"].tail(100))
-                else:
-                    st.info("Need at least 20 data points for ML.")
 
-            # Highlight abnormal rows
-            df["threshold_anomaly"] = df["impact_event"] == 1
-            styled = df.tail(30).style.apply(
-                lambda r: ['background-color: #ffcccc' if r['threshold_anomaly'] else ''] * len(r),
-                axis=1
-            )
-            st.dataframe(styled, use_container_width=True)
+                features = ["accel_x_g", "vibration_rms_g"]
+
+                try:
+
+                    scores, anomalies = live_anomaly_detection(df, features)
+
+                    if scores is not None:
+
+                        df["anomaly_score"] = scores
+
+                        df["is_anomaly"] = anomalies
+
+                        st.metric("Anomaly", "🚨" if df.iloc[-1]["is_anomaly"] == -1 else "✅")
+
+                        st.line_chart(df.set_index("timestamp")["anomaly_score"].tail(1000))
+
+                        st.line_chart(df.set_index("timestamp")["rul"].tail(1000))
+
+                    else:
+
+                        st.info("Need at least 20 data points for ML.")
+
+                except Exception as e:
+
+                    st.error(f"❌ ML insights error: {e}")
+
+            # ✅ Highlight abnormal rows
+
+            try:
+
+                df["threshold_anomaly"] = df["impact_event"] == 1
+
+                styled = df.tail(30).style.apply(
+
+                    lambda r: ['background-color: #ffcccc' if r['threshold_anomaly'] else ''] * len(r),
+                    axis=1
+                )
+                st.dataframe(styled, use_container_width=True)
+            except Exception as e:
+                st.error(f"❌ Table display failed: {e}")
 
 # --------------------------------------
 st.divider()

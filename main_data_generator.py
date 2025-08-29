@@ -22,7 +22,8 @@ from data_generators.conveyor_belt.pulley.touchswitch_pulley import generate_tou
 from data_generators.conveyor_belt.impact_bed.impact_bed_accelerometer import generate_impact_bed_accelerometer_data
 from data_generators.conveyor_belt.impact_bed.impact_bed_load_cell import generate_load_cell_data
 
-from data_generators.ball_mill.grinding_jar.retsch_grindcontrol import generate_retsch_grindcontrol_data_stream
+from data_generators.ball_mill.grinding_jar.s20_pressure import generate_s20_pressure_stream
+from data_generators.ball_mill.grinding_jar.tr10b_temperature import generate_tr10b_temperature_stream
 from data_generators.ball_mill.mill_shell.mill_shell_vibration import generate_mill_shell_vibration_data_stream
 from data_generators.ball_mill.mill_shell.mill_shell_acoustic import generate_mill_shell_acoustic_data_stream
 from data_generators.ball_mill.motor.motor_accelerometer import generate_motor_accelerometer_data_stream
@@ -82,9 +83,10 @@ class MainDataGenerator:
             },
             "touchswitch_pulley": {
                 "function": generate_touchswitch_pulley_data,
+                "default_file": "touchswitch_pulley.csv",
                 "description": "4B Touchswitch TS2V4AI Pulley Alignment Sensor",
                 "base_path": CONVEYOR_DATA_DIR
-                # No default_file, no arguments needed!
+
             },
             "impact_bed_accelerometer": {
                 "function": generate_impact_bed_accelerometer_data,
@@ -99,10 +101,16 @@ class MainDataGenerator:
                 "base_path": CONVEYOR_DATA_DIR
             },
             # Ball Mill Sensors
-            "retsch_grindcontrol": {
-                "function": generate_retsch_grindcontrol_data_stream,
-                "default_file": "retsch_grindcontrol_data.csv",
-                "description": "Retsch GrindControl Ball/Rod Mill Pressure & Temperature",
+            "s20_pressure": {
+                "function": generate_s20_pressure_stream,
+                "default_file": "s20_pressure_data.csv",
+                "description": "WIKA S-20 Pressure Sensor (Grinding Jar)",
+                "base_path": BALL_MILL_DATA_DIR
+            },
+            "tr10b_temperature": {
+                "function": generate_tr10b_temperature_stream,
+                "default_file": "tr10b_temperature.csv",
+                "description": "WIKA TR10-B Resistance Temperature Detector (Pt100)",
                 "base_path": BALL_MILL_DATA_DIR
             },
             "mill_shell_vibration": {
@@ -164,7 +172,7 @@ class MainDataGenerator:
                     sensor_kwargs["run_duration_seconds"] = duration_seconds
 
 
-            elif sensor_type in ["retsch_grindcontrol", "mill_shell_vibration", "mill_shell_acoustic", "motor_accelerometer", "motor_temperature"]:
+            elif sensor_type in ["s20_pressure", "tr10b_temperature", "mill_shell_vibration", "mill_shell_acoustic", "motor_accelerometer", "motor_temperature"]:
                 sensor_kwargs["output_path"] = output_path
                 if duration_seconds is not None:
                     sensor_kwargs["run_duration_seconds"] = duration_seconds

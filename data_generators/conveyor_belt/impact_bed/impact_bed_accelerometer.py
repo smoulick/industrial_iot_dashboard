@@ -10,22 +10,23 @@ logger = logging.getLogger(__name__)
 
 def generate_impact_bed_accelerometer_data(
     sensor_id="ADXL1001-IMPACTBED-001",
-    g_range=100,  # ±100g for ADXL1001, ±50g for ADXL1002
-    sensitivity_mV_per_g=20,  # ADXL1001: 20 mV/g at 5V
-    base_freq_hz=50,  # Typical conveyor vibration frequency
-    sample_rate_hz=100,  # 100 Hz for dashboard demo (real sensor can go much higher)
+    g_range=100,
+    sensitivity_mV_per_g=20,
+    base_freq_hz=50,
+    sample_rate_hz=100,
 ):
-    project_root = Path(__file__).resolve().parents[3]  # [3] for .../data_generators/conveyor_belt/pulley/
+    project_root = Path(__file__).resolve().parents[3]
     output_path = project_root / "data_output/conveyor_belt/impact_bed_accelerometer.csv"
     print("Writing to:", output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = output_path.exists() and output_path.stat().st_size > 0
 
-    # Vibration pattern: base sine + harmonics + low noise
     t = 0
     dt = 1.0 / sample_rate_hz
-    impact_duration = 0.04  # seconds
+    impact_duration = 0.2  # longer, smoother impact
     impact_samples = int(impact_duration * sample_rate_hz)
+    impact_profile = np.zeros(impact_samples)
+    impact_idx = 0
     impact_cooldown = 0
 
     with open(output_path, 'a', newline='') as csvfile:
@@ -38,32 +39,32 @@ def generate_impact_bed_accelerometer_data(
             ])
         try:
             while True:
-                # Simulate base vibration: 50 Hz sine + 150 Hz harmonic + low noise
-                base = 2.0 * np.sin(2 * np.pi * base_freq_hz * t)
-                harmonic = 0.5 * np.sin(2 * np.pi * 3 * base_freq_hz * t)
-                noise = np.random.normal(0, 0.05)
+                # ✅ Realistic base signal
+                base = 5.0 * np.sin(2 * np.pi * base_freq_hz * t)
+                harmonic = 1.5 * np.sin(2 * np.pi * 3 * base_freq_hz * t)
+                noise = np.random.normal(0, 0.8)  # stronger random noise
                 accel_x = base + harmonic + noise
 
-                # Impact event: sharp, high-g spike
-                if impact_cooldown == 0 and np.random.rand() < 0.01:
-                    impact_profile = np.hanning(impact_samples) * np.random.uniform(20, 60)
+                # 🎯 Smooth impact spike simulation
+                if impact_cooldown == 0 and np.random.rand() < 0.005:
+                    peak = np.random.uniform(10, 25)
+                    impact_profile = np.hanning(impact_samples) * peak
                     impact_cooldown = impact_samples
                     impact_idx = 0
+
                 if impact_cooldown > 0:
                     accel_x += impact_profile[impact_idx]
-                    impact_idx += 1
-                    impact_cooldown -= 1
                     impact_event = 1
                     impact_peak = impact_profile.max()
+                    impact_idx += 1
+                    impact_cooldown -= 1
                 else:
                     impact_event = 0
                     impact_peak = 0
 
-                # Overrange detection (ADXL1001: ±100g)
                 overrange = int(abs(accel_x) > g_range)
                 vibration_rms = np.sqrt(accel_x ** 2)
 
-                # Alerts
                 if overrange:
                     alerts = "OVERRANGE"
                 elif impact_event:
